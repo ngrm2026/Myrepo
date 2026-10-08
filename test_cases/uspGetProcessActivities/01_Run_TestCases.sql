@@ -4,29 +4,31 @@
 
     HOW TO RUN
       1. Open in SSMS and enable Query > SQLCMD Mode (or run with sqlcmd -i).
-      2. Set the :setvar values below to real IDs from your test database.
-         Run 00_Discover_Metadata.sql first to find them.
+      2. Set the :setvar values below to real values from your test database
+         (see "Finding test values" in README.md).
       3. Execute. Every call runs inside BEGIN TRAN / ROLLBACK, so no data is changed.
-      4. The final result set is the PASS/FAIL summary. The result grids above it
-         hold each case's output; compare them against the "Expected" text in
-         TestCases.md (PASS* = executed as expected, data still needs a manual check).
+      4. The last two result sets are the summary. Each case's output follows its
+         "TestCase | Title" grid; compare it with the Expected text in TestCases.md.
 */
 
 -- ---- Environment-specific test data (edit these) -------------------------
-:setvar AltTagID                 6738
+:setvar AltTagName               "BSP2"
+:setvar AltTagObjectID           366714
+:setvar ProcessName              "Process A"
+:setvar AltProcessName           "Process B"
 :setvar StatusValue              1
-:setvar AltStatusValue           2
 :setvar PriorityValue            1
 :setvar AltPriorityValue         2
 :setvar TypeValue                1
 :setvar AltTypeValue             2
 :setvar TriggerValue             1
 :setvar AltTriggerValue          2
-:setvar OtherRoleID              346315
+:setvar OtherUserID              286
+:setvar OtherUserRoleID          346315
 :setvar ParentProcessInstanceID  1
 :setvar StartDate                2026-01-01
 :setvar EndDate                  2026-12-31
-:setvar MaxDurationMs            2000
+:setvar MaxDurationMs            5000
 -- -------------------------------------------------------------------------
 
 SET NOCOUNT ON;
@@ -48,7 +50,7 @@ GO
 
 -- ==========================================================================
 -- TC001 | Baseline | Execute baseline call exactly as captured
--- Expected: Executes without error. Returns open (IsOpenActivity=1) activities tagged with tag 6737 (BSP) that user 285 / role 346314 can see, excluding child and reference element tasks. Record the row count; later cases compare against it.
+-- Expected: No error. User/Role path, ProcessTitle=1 (My Tasks). Returns 4 result sets: (1) process instances; (2) activity instances, one row per process, the latest by StartDate (RANK=1), where both process and activity are open (IsActive=1) and the activity is on an element tagged BSP on which user 285 holds the activity's ExecutorRoleID, or is executed by user 285; (3) one row, ProcessInstanceID = NULL; (4) SLA rows for the returned processes. Processes missing a ProcessType, ProcessPriority or SupportedClient attribute are never returned. Record the row count of each set; later cases compare against them.
 -- ==========================================================================
 PRINT '>> TC001 - Execute baseline call exactly as captured';
 SELECT 'TC001' AS TestCase, 'Execute baseline call exactly as captured' AS Title;
@@ -60,8 +62,8 @@ BEGIN TRY
     DECLARE @p10 WorkFlow.ProcessActivityFilterValueTVP;
     DECLARE @p13 WorkFlow.ProcessActivityFilterValueTVP;
     DECLARE @p14 WorkFlow.ProcessActivityFilterValueTVP;
-    SET @t0 = SYSDATETIME();
     BEGIN TRAN;
+    SET @t0 = SYSDATETIME();
     EXEC [WorkFlow].[uspGetProcessActivities]
          @EndDate=NULL
         ,@FilterTags=@p2
@@ -80,9 +82,10 @@ BEGIN TRY
         ,@UserID=285
         ,@RoleID=346314
         ,@ParentProcessInstanceID=0;
+    DECLARE @ms int = DATEDIFF(ms, @t0, SYSDATETIME());
     IF @@TRANCOUNT > 0 ROLLBACK TRAN;
     INSERT INTO #TestResults (TestCase, Title, Expectation, Outcome, DurationMs, MaxDurationMs, ErrorNumber, ErrorMessage)
-    VALUES ('TC001', 'Execute baseline call exactly as captured', 'SUCCESS', 'SUCCESS', DATEDIFF(ms, @t0, SYSDATETIME()), NULL, NULL, NULL);
+    VALUES ('TC001', 'Execute baseline call exactly as captured', 'SUCCESS', 'SUCCESS', @ms, NULL, NULL, NULL);
 END TRY
 BEGIN CATCH
     IF @@TRANCOUNT > 0 ROLLBACK TRAN;
@@ -92,7 +95,7 @@ END CATCH
 GO
 -- ==========================================================================
 -- TC002 | Baseline | Re-execute baseline call (repeatability)
--- Expected: Same rows, same column set, and same order as TC001. Proves the result is deterministic.
+-- Expected: Same rows as TC001, compared as sets: there is no ORDER BY, so row order can differ. Reads use NOLOCK, so counts can drift if data changes between runs.
 -- ==========================================================================
 PRINT '>> TC002 - Re-execute baseline call (repeatability)';
 SELECT 'TC002' AS TestCase, 'Re-execute baseline call (repeatability)' AS Title;
@@ -104,8 +107,8 @@ BEGIN TRY
     DECLARE @p10 WorkFlow.ProcessActivityFilterValueTVP;
     DECLARE @p13 WorkFlow.ProcessActivityFilterValueTVP;
     DECLARE @p14 WorkFlow.ProcessActivityFilterValueTVP;
-    SET @t0 = SYSDATETIME();
     BEGIN TRAN;
+    SET @t0 = SYSDATETIME();
     EXEC [WorkFlow].[uspGetProcessActivities]
          @EndDate=NULL
         ,@FilterTags=@p2
@@ -124,9 +127,10 @@ BEGIN TRY
         ,@UserID=285
         ,@RoleID=346314
         ,@ParentProcessInstanceID=0;
+    DECLARE @ms int = DATEDIFF(ms, @t0, SYSDATETIME());
     IF @@TRANCOUNT > 0 ROLLBACK TRAN;
     INSERT INTO #TestResults (TestCase, Title, Expectation, Outcome, DurationMs, MaxDurationMs, ErrorNumber, ErrorMessage)
-    VALUES ('TC002', 'Re-execute baseline call (repeatability)', 'SUCCESS', 'SUCCESS', DATEDIFF(ms, @t0, SYSDATETIME()), NULL, NULL, NULL);
+    VALUES ('TC002', 'Re-execute baseline call (repeatability)', 'SUCCESS', 'SUCCESS', @ms, NULL, NULL, NULL);
 END TRY
 BEGIN CATCH
     IF @@TRANCOUNT > 0 ROLLBACK TRAN;
@@ -135,27 +139,28 @@ BEGIN CATCH
 END CATCH
 GO
 -- ==========================================================================
--- TC010 | FilterTags | Empty @FilterTags TVP
--- Expected: No error. Either no tag filter is applied (rows >= TC001) or zero rows are returned; confirm which behaviour is intended against the procedure definition.
+-- TC005 | ProcessTitle | ProcessTitle = 2 (All Requests)
+-- Expected: Reads the SupportedElementTypes attribute of RoleID 346314. If it is set: activities executed by user 285 plus every activity on tagged elements of those element types (no role-membership check). If it is not set: activities executed by user 285 plus unassigned activities whose ExecutorRoleID is one of the user's groups. Set (2) has IsUserTaskExecutor = 1 only where Executor = 285.
 -- ==========================================================================
-PRINT '>> TC010 - Empty @FilterTags TVP';
-SELECT 'TC010' AS TestCase, 'Empty @FilterTags TVP' AS Title;
+PRINT '>> TC005 - ProcessTitle = 2 (All Requests)';
+SELECT 'TC005' AS TestCase, 'ProcessTitle = 2 (All Requests)' AS Title;
 DECLARE @t0 datetime2 = SYSDATETIME();
 BEGIN TRY
     DECLARE @p2 Tag.TagModelTVP;
+    INSERT INTO @p2 VALUES (6737,N'BSP',0,366713,NULL,28,366713,5031,410129,0,NULL,'0001-01-01 00:00:00');
     DECLARE @p9 WorkFlow.ProcessActivityFilterValueTVP;
     DECLARE @p10 WorkFlow.ProcessActivityFilterValueTVP;
     DECLARE @p13 WorkFlow.ProcessActivityFilterValueTVP;
     DECLARE @p14 WorkFlow.ProcessActivityFilterValueTVP;
-    SET @t0 = SYSDATETIME();
     BEGIN TRAN;
+    SET @t0 = SYSDATETIME();
     EXEC [WorkFlow].[uspGetProcessActivities]
          @EndDate=NULL
         ,@FilterTags=@p2
         ,@IsMobileEnabled=NULL
         ,@IsOpenActivity=1
         ,@IsChildElementTasks=0
-        ,@ProcessTitle=1
+        ,@ProcessTitle=2
         ,@IsPersistentDataRequired=NULL
         ,@ProcessDateFilterAppliesTo=1
         ,@ProcessStatus=@p9
@@ -167,40 +172,40 @@ BEGIN TRY
         ,@UserID=285
         ,@RoleID=346314
         ,@ParentProcessInstanceID=0;
+    DECLARE @ms int = DATEDIFF(ms, @t0, SYSDATETIME());
     IF @@TRANCOUNT > 0 ROLLBACK TRAN;
     INSERT INTO #TestResults (TestCase, Title, Expectation, Outcome, DurationMs, MaxDurationMs, ErrorNumber, ErrorMessage)
-    VALUES ('TC010', 'Empty @FilterTags TVP', 'SUCCESS', 'SUCCESS', DATEDIFF(ms, @t0, SYSDATETIME()), NULL, NULL, NULL);
+    VALUES ('TC005', 'ProcessTitle = 2 (All Requests)', 'SUCCESS', 'SUCCESS', @ms, NULL, NULL, NULL);
 END TRY
 BEGIN CATCH
     IF @@TRANCOUNT > 0 ROLLBACK TRAN;
     INSERT INTO #TestResults (TestCase, Title, Expectation, Outcome, DurationMs, MaxDurationMs, ErrorNumber, ErrorMessage)
-    VALUES ('TC010', 'Empty @FilterTags TVP', 'SUCCESS', 'ERROR', DATEDIFF(ms, @t0, SYSDATETIME()), NULL, ERROR_NUMBER(), ERROR_MESSAGE());
+    VALUES ('TC005', 'ProcessTitle = 2 (All Requests)', 'SUCCESS', 'ERROR', DATEDIFF(ms, @t0, SYSDATETIME()), NULL, ERROR_NUMBER(), ERROR_MESSAGE());
 END CATCH
 GO
 -- ==========================================================================
--- TC011 | FilterTags | Two tags in @FilterTags
--- Expected: Rows for tag 6737 OR tag $(AltTagID). Row count >= TC001. No duplicate activity rows.
+-- TC006 | ProcessTitle | ProcessTitle = 3 (My Requests)
+-- Expected: Only processes with TriggeredBy = 285 (the latest activity of each). Element tags and RoleID are ignored; only process-design tags (ElementTypeID 2008) still filter by name.
 -- ==========================================================================
-PRINT '>> TC011 - Two tags in @FilterTags';
-SELECT 'TC011' AS TestCase, 'Two tags in @FilterTags' AS Title;
+PRINT '>> TC006 - ProcessTitle = 3 (My Requests)';
+SELECT 'TC006' AS TestCase, 'ProcessTitle = 3 (My Requests)' AS Title;
 DECLARE @t0 datetime2 = SYSDATETIME();
 BEGIN TRY
     DECLARE @p2 Tag.TagModelTVP;
     INSERT INTO @p2 VALUES (6737,N'BSP',0,366713,NULL,28,366713,5031,410129,0,NULL,'0001-01-01 00:00:00');
-    INSERT INTO @p2 VALUES ($(AltTagID),N'BSP',0,366713,NULL,28,366713,5031,410129,0,NULL,'0001-01-01 00:00:00');
     DECLARE @p9 WorkFlow.ProcessActivityFilterValueTVP;
     DECLARE @p10 WorkFlow.ProcessActivityFilterValueTVP;
     DECLARE @p13 WorkFlow.ProcessActivityFilterValueTVP;
     DECLARE @p14 WorkFlow.ProcessActivityFilterValueTVP;
-    SET @t0 = SYSDATETIME();
     BEGIN TRAN;
+    SET @t0 = SYSDATETIME();
     EXEC [WorkFlow].[uspGetProcessActivities]
          @EndDate=NULL
         ,@FilterTags=@p2
         ,@IsMobileEnabled=NULL
         ,@IsOpenActivity=1
         ,@IsChildElementTasks=0
-        ,@ProcessTitle=1
+        ,@ProcessTitle=3
         ,@IsPersistentDataRequired=NULL
         ,@ProcessDateFilterAppliesTo=1
         ,@ProcessStatus=@p9
@@ -212,111 +217,24 @@ BEGIN TRY
         ,@UserID=285
         ,@RoleID=346314
         ,@ParentProcessInstanceID=0;
+    DECLARE @ms int = DATEDIFF(ms, @t0, SYSDATETIME());
     IF @@TRANCOUNT > 0 ROLLBACK TRAN;
     INSERT INTO #TestResults (TestCase, Title, Expectation, Outcome, DurationMs, MaxDurationMs, ErrorNumber, ErrorMessage)
-    VALUES ('TC011', 'Two tags in @FilterTags', 'SUCCESS', 'SUCCESS', DATEDIFF(ms, @t0, SYSDATETIME()), NULL, NULL, NULL);
+    VALUES ('TC006', 'ProcessTitle = 3 (My Requests)', 'SUCCESS', 'SUCCESS', @ms, NULL, NULL, NULL);
 END TRY
 BEGIN CATCH
     IF @@TRANCOUNT > 0 ROLLBACK TRAN;
     INSERT INTO #TestResults (TestCase, Title, Expectation, Outcome, DurationMs, MaxDurationMs, ErrorNumber, ErrorMessage)
-    VALUES ('TC011', 'Two tags in @FilterTags', 'SUCCESS', 'ERROR', DATEDIFF(ms, @t0, SYSDATETIME()), NULL, ERROR_NUMBER(), ERROR_MESSAGE());
+    VALUES ('TC006', 'ProcessTitle = 3 (My Requests)', 'SUCCESS', 'ERROR', DATEDIFF(ms, @t0, SYSDATETIME()), NULL, ERROR_NUMBER(), ERROR_MESSAGE());
 END CATCH
 GO
 -- ==========================================================================
--- TC012 | FilterTags | Non-existent tag ID (-1)
--- Expected: No error, zero rows.
+-- TC007 | ProcessTitle | ProcessTitle = 0 (undefined value)
+-- Expected: No error and no validation. Takes the 'All Tasks' branch without SupportedElementTypes: activities executed by user 285 plus unassigned activities of the user's groups.
+-- Suspected defect: No validation of @ProcessTitle; undefined values silently run the 'All Tasks' path.
 -- ==========================================================================
-PRINT '>> TC012 - Non-existent tag ID (-1)';
-SELECT 'TC012' AS TestCase, 'Non-existent tag ID (-1)' AS Title;
-DECLARE @t0 datetime2 = SYSDATETIME();
-BEGIN TRY
-    DECLARE @p2 Tag.TagModelTVP;
-    INSERT INTO @p2 VALUES (-1,N'BSP',0,366713,NULL,28,366713,5031,410129,0,NULL,'0001-01-01 00:00:00');
-    DECLARE @p9 WorkFlow.ProcessActivityFilterValueTVP;
-    DECLARE @p10 WorkFlow.ProcessActivityFilterValueTVP;
-    DECLARE @p13 WorkFlow.ProcessActivityFilterValueTVP;
-    DECLARE @p14 WorkFlow.ProcessActivityFilterValueTVP;
-    SET @t0 = SYSDATETIME();
-    BEGIN TRAN;
-    EXEC [WorkFlow].[uspGetProcessActivities]
-         @EndDate=NULL
-        ,@FilterTags=@p2
-        ,@IsMobileEnabled=NULL
-        ,@IsOpenActivity=1
-        ,@IsChildElementTasks=0
-        ,@ProcessTitle=1
-        ,@IsPersistentDataRequired=NULL
-        ,@ProcessDateFilterAppliesTo=1
-        ,@ProcessStatus=@p9
-        ,@ProcessPriorities=@p10
-        ,@IsReferenceElementTasks=0
-        ,@StartDate=NULL
-        ,@ProcessTypes=@p13
-        ,@ProcessTriggers=@p14
-        ,@UserID=285
-        ,@RoleID=346314
-        ,@ParentProcessInstanceID=0;
-    IF @@TRANCOUNT > 0 ROLLBACK TRAN;
-    INSERT INTO #TestResults (TestCase, Title, Expectation, Outcome, DurationMs, MaxDurationMs, ErrorNumber, ErrorMessage)
-    VALUES ('TC012', 'Non-existent tag ID (-1)', 'SUCCESS', 'SUCCESS', DATEDIFF(ms, @t0, SYSDATETIME()), NULL, NULL, NULL);
-END TRY
-BEGIN CATCH
-    IF @@TRANCOUNT > 0 ROLLBACK TRAN;
-    INSERT INTO #TestResults (TestCase, Title, Expectation, Outcome, DurationMs, MaxDurationMs, ErrorNumber, ErrorMessage)
-    VALUES ('TC012', 'Non-existent tag ID (-1)', 'SUCCESS', 'ERROR', DATEDIFF(ms, @t0, SYSDATETIME()), NULL, ERROR_NUMBER(), ERROR_MESSAGE());
-END CATCH
-GO
--- ==========================================================================
--- TC013 | FilterTags | Same tag supplied twice
--- Expected: Identical to TC001. Activities are not duplicated by the repeated tag. (If the TVP has a primary key, the duplicate INSERT fails; that is also acceptable.)
--- ==========================================================================
-PRINT '>> TC013 - Same tag supplied twice';
-SELECT 'TC013' AS TestCase, 'Same tag supplied twice' AS Title;
-DECLARE @t0 datetime2 = SYSDATETIME();
-BEGIN TRY
-    DECLARE @p2 Tag.TagModelTVP;
-    INSERT INTO @p2 VALUES (6737,N'BSP',0,366713,NULL,28,366713,5031,410129,0,NULL,'0001-01-01 00:00:00');
-    INSERT INTO @p2 VALUES (6737,N'BSP',0,366713,NULL,28,366713,5031,410129,0,NULL,'0001-01-01 00:00:00');
-    DECLARE @p9 WorkFlow.ProcessActivityFilterValueTVP;
-    DECLARE @p10 WorkFlow.ProcessActivityFilterValueTVP;
-    DECLARE @p13 WorkFlow.ProcessActivityFilterValueTVP;
-    DECLARE @p14 WorkFlow.ProcessActivityFilterValueTVP;
-    SET @t0 = SYSDATETIME();
-    BEGIN TRAN;
-    EXEC [WorkFlow].[uspGetProcessActivities]
-         @EndDate=NULL
-        ,@FilterTags=@p2
-        ,@IsMobileEnabled=NULL
-        ,@IsOpenActivity=1
-        ,@IsChildElementTasks=0
-        ,@ProcessTitle=1
-        ,@IsPersistentDataRequired=NULL
-        ,@ProcessDateFilterAppliesTo=1
-        ,@ProcessStatus=@p9
-        ,@ProcessPriorities=@p10
-        ,@IsReferenceElementTasks=0
-        ,@StartDate=NULL
-        ,@ProcessTypes=@p13
-        ,@ProcessTriggers=@p14
-        ,@UserID=285
-        ,@RoleID=346314
-        ,@ParentProcessInstanceID=0;
-    IF @@TRANCOUNT > 0 ROLLBACK TRAN;
-    INSERT INTO #TestResults (TestCase, Title, Expectation, Outcome, DurationMs, MaxDurationMs, ErrorNumber, ErrorMessage)
-    VALUES ('TC013', 'Same tag supplied twice', 'ANY', 'SUCCESS', DATEDIFF(ms, @t0, SYSDATETIME()), NULL, NULL, NULL);
-END TRY
-BEGIN CATCH
-    IF @@TRANCOUNT > 0 ROLLBACK TRAN;
-    INSERT INTO #TestResults (TestCase, Title, Expectation, Outcome, DurationMs, MaxDurationMs, ErrorNumber, ErrorMessage)
-    VALUES ('TC013', 'Same tag supplied twice', 'ANY', 'ERROR', DATEDIFF(ms, @t0, SYSDATETIME()), NULL, ERROR_NUMBER(), ERROR_MESSAGE());
-END CATCH
-GO
--- ==========================================================================
--- TC020 | IsOpenActivity | IsOpenActivity = 0
--- Expected: Returns closed/completed activities only (or all activities, per the definition). No activity is in both the TC001 and TC020 results if 0 means closed.
--- ==========================================================================
-PRINT '>> TC020 - IsOpenActivity = 0';
-SELECT 'TC020' AS TestCase, 'IsOpenActivity = 0' AS Title;
+PRINT '>> TC007 - ProcessTitle = 0 (undefined value)';
+SELECT 'TC007' AS TestCase, 'ProcessTitle = 0 (undefined value)' AS Title;
 DECLARE @t0 datetime2 = SYSDATETIME();
 BEGIN TRY
     DECLARE @p2 Tag.TagModelTVP;
@@ -325,448 +243,8 @@ BEGIN TRY
     DECLARE @p10 WorkFlow.ProcessActivityFilterValueTVP;
     DECLARE @p13 WorkFlow.ProcessActivityFilterValueTVP;
     DECLARE @p14 WorkFlow.ProcessActivityFilterValueTVP;
-    SET @t0 = SYSDATETIME();
     BEGIN TRAN;
-    EXEC [WorkFlow].[uspGetProcessActivities]
-         @EndDate=NULL
-        ,@FilterTags=@p2
-        ,@IsMobileEnabled=NULL
-        ,@IsOpenActivity=0
-        ,@IsChildElementTasks=0
-        ,@ProcessTitle=1
-        ,@IsPersistentDataRequired=NULL
-        ,@ProcessDateFilterAppliesTo=1
-        ,@ProcessStatus=@p9
-        ,@ProcessPriorities=@p10
-        ,@IsReferenceElementTasks=0
-        ,@StartDate=NULL
-        ,@ProcessTypes=@p13
-        ,@ProcessTriggers=@p14
-        ,@UserID=285
-        ,@RoleID=346314
-        ,@ParentProcessInstanceID=0;
-    IF @@TRANCOUNT > 0 ROLLBACK TRAN;
-    INSERT INTO #TestResults (TestCase, Title, Expectation, Outcome, DurationMs, MaxDurationMs, ErrorNumber, ErrorMessage)
-    VALUES ('TC020', 'IsOpenActivity = 0', 'SUCCESS', 'SUCCESS', DATEDIFF(ms, @t0, SYSDATETIME()), NULL, NULL, NULL);
-END TRY
-BEGIN CATCH
-    IF @@TRANCOUNT > 0 ROLLBACK TRAN;
-    INSERT INTO #TestResults (TestCase, Title, Expectation, Outcome, DurationMs, MaxDurationMs, ErrorNumber, ErrorMessage)
-    VALUES ('TC020', 'IsOpenActivity = 0', 'SUCCESS', 'ERROR', DATEDIFF(ms, @t0, SYSDATETIME()), NULL, ERROR_NUMBER(), ERROR_MESSAGE());
-END CATCH
-GO
--- ==========================================================================
--- TC021 | IsOpenActivity | IsOpenActivity = NULL
--- Expected: No error. Expected: open and closed activities (row count >= TC001).
--- ==========================================================================
-PRINT '>> TC021 - IsOpenActivity = NULL';
-SELECT 'TC021' AS TestCase, 'IsOpenActivity = NULL' AS Title;
-DECLARE @t0 datetime2 = SYSDATETIME();
-BEGIN TRY
-    DECLARE @p2 Tag.TagModelTVP;
-    INSERT INTO @p2 VALUES (6737,N'BSP',0,366713,NULL,28,366713,5031,410129,0,NULL,'0001-01-01 00:00:00');
-    DECLARE @p9 WorkFlow.ProcessActivityFilterValueTVP;
-    DECLARE @p10 WorkFlow.ProcessActivityFilterValueTVP;
-    DECLARE @p13 WorkFlow.ProcessActivityFilterValueTVP;
-    DECLARE @p14 WorkFlow.ProcessActivityFilterValueTVP;
     SET @t0 = SYSDATETIME();
-    BEGIN TRAN;
-    EXEC [WorkFlow].[uspGetProcessActivities]
-         @EndDate=NULL
-        ,@FilterTags=@p2
-        ,@IsMobileEnabled=NULL
-        ,@IsOpenActivity=NULL
-        ,@IsChildElementTasks=0
-        ,@ProcessTitle=1
-        ,@IsPersistentDataRequired=NULL
-        ,@ProcessDateFilterAppliesTo=1
-        ,@ProcessStatus=@p9
-        ,@ProcessPriorities=@p10
-        ,@IsReferenceElementTasks=0
-        ,@StartDate=NULL
-        ,@ProcessTypes=@p13
-        ,@ProcessTriggers=@p14
-        ,@UserID=285
-        ,@RoleID=346314
-        ,@ParentProcessInstanceID=0;
-    IF @@TRANCOUNT > 0 ROLLBACK TRAN;
-    INSERT INTO #TestResults (TestCase, Title, Expectation, Outcome, DurationMs, MaxDurationMs, ErrorNumber, ErrorMessage)
-    VALUES ('TC021', 'IsOpenActivity = NULL', 'SUCCESS', 'SUCCESS', DATEDIFF(ms, @t0, SYSDATETIME()), NULL, NULL, NULL);
-END TRY
-BEGIN CATCH
-    IF @@TRANCOUNT > 0 ROLLBACK TRAN;
-    INSERT INTO #TestResults (TestCase, Title, Expectation, Outcome, DurationMs, MaxDurationMs, ErrorNumber, ErrorMessage)
-    VALUES ('TC021', 'IsOpenActivity = NULL', 'SUCCESS', 'ERROR', DATEDIFF(ms, @t0, SYSDATETIME()), NULL, ERROR_NUMBER(), ERROR_MESSAGE());
-END CATCH
-GO
--- ==========================================================================
--- TC030 | ElementTasks | IsChildElementTasks = 1
--- Expected: Child element tasks are included. Row count >= TC001.
--- ==========================================================================
-PRINT '>> TC030 - IsChildElementTasks = 1';
-SELECT 'TC030' AS TestCase, 'IsChildElementTasks = 1' AS Title;
-DECLARE @t0 datetime2 = SYSDATETIME();
-BEGIN TRY
-    DECLARE @p2 Tag.TagModelTVP;
-    INSERT INTO @p2 VALUES (6737,N'BSP',0,366713,NULL,28,366713,5031,410129,0,NULL,'0001-01-01 00:00:00');
-    DECLARE @p9 WorkFlow.ProcessActivityFilterValueTVP;
-    DECLARE @p10 WorkFlow.ProcessActivityFilterValueTVP;
-    DECLARE @p13 WorkFlow.ProcessActivityFilterValueTVP;
-    DECLARE @p14 WorkFlow.ProcessActivityFilterValueTVP;
-    SET @t0 = SYSDATETIME();
-    BEGIN TRAN;
-    EXEC [WorkFlow].[uspGetProcessActivities]
-         @EndDate=NULL
-        ,@FilterTags=@p2
-        ,@IsMobileEnabled=NULL
-        ,@IsOpenActivity=1
-        ,@IsChildElementTasks=1
-        ,@ProcessTitle=1
-        ,@IsPersistentDataRequired=NULL
-        ,@ProcessDateFilterAppliesTo=1
-        ,@ProcessStatus=@p9
-        ,@ProcessPriorities=@p10
-        ,@IsReferenceElementTasks=0
-        ,@StartDate=NULL
-        ,@ProcessTypes=@p13
-        ,@ProcessTriggers=@p14
-        ,@UserID=285
-        ,@RoleID=346314
-        ,@ParentProcessInstanceID=0;
-    IF @@TRANCOUNT > 0 ROLLBACK TRAN;
-    INSERT INTO #TestResults (TestCase, Title, Expectation, Outcome, DurationMs, MaxDurationMs, ErrorNumber, ErrorMessage)
-    VALUES ('TC030', 'IsChildElementTasks = 1', 'SUCCESS', 'SUCCESS', DATEDIFF(ms, @t0, SYSDATETIME()), NULL, NULL, NULL);
-END TRY
-BEGIN CATCH
-    IF @@TRANCOUNT > 0 ROLLBACK TRAN;
-    INSERT INTO #TestResults (TestCase, Title, Expectation, Outcome, DurationMs, MaxDurationMs, ErrorNumber, ErrorMessage)
-    VALUES ('TC030', 'IsChildElementTasks = 1', 'SUCCESS', 'ERROR', DATEDIFF(ms, @t0, SYSDATETIME()), NULL, ERROR_NUMBER(), ERROR_MESSAGE());
-END CATCH
-GO
--- ==========================================================================
--- TC031 | ElementTasks | IsReferenceElementTasks = 1
--- Expected: Reference element tasks are included. Row count >= TC001.
--- ==========================================================================
-PRINT '>> TC031 - IsReferenceElementTasks = 1';
-SELECT 'TC031' AS TestCase, 'IsReferenceElementTasks = 1' AS Title;
-DECLARE @t0 datetime2 = SYSDATETIME();
-BEGIN TRY
-    DECLARE @p2 Tag.TagModelTVP;
-    INSERT INTO @p2 VALUES (6737,N'BSP',0,366713,NULL,28,366713,5031,410129,0,NULL,'0001-01-01 00:00:00');
-    DECLARE @p9 WorkFlow.ProcessActivityFilterValueTVP;
-    DECLARE @p10 WorkFlow.ProcessActivityFilterValueTVP;
-    DECLARE @p13 WorkFlow.ProcessActivityFilterValueTVP;
-    DECLARE @p14 WorkFlow.ProcessActivityFilterValueTVP;
-    SET @t0 = SYSDATETIME();
-    BEGIN TRAN;
-    EXEC [WorkFlow].[uspGetProcessActivities]
-         @EndDate=NULL
-        ,@FilterTags=@p2
-        ,@IsMobileEnabled=NULL
-        ,@IsOpenActivity=1
-        ,@IsChildElementTasks=0
-        ,@ProcessTitle=1
-        ,@IsPersistentDataRequired=NULL
-        ,@ProcessDateFilterAppliesTo=1
-        ,@ProcessStatus=@p9
-        ,@ProcessPriorities=@p10
-        ,@IsReferenceElementTasks=1
-        ,@StartDate=NULL
-        ,@ProcessTypes=@p13
-        ,@ProcessTriggers=@p14
-        ,@UserID=285
-        ,@RoleID=346314
-        ,@ParentProcessInstanceID=0;
-    IF @@TRANCOUNT > 0 ROLLBACK TRAN;
-    INSERT INTO #TestResults (TestCase, Title, Expectation, Outcome, DurationMs, MaxDurationMs, ErrorNumber, ErrorMessage)
-    VALUES ('TC031', 'IsReferenceElementTasks = 1', 'SUCCESS', 'SUCCESS', DATEDIFF(ms, @t0, SYSDATETIME()), NULL, NULL, NULL);
-END TRY
-BEGIN CATCH
-    IF @@TRANCOUNT > 0 ROLLBACK TRAN;
-    INSERT INTO #TestResults (TestCase, Title, Expectation, Outcome, DurationMs, MaxDurationMs, ErrorNumber, ErrorMessage)
-    VALUES ('TC031', 'IsReferenceElementTasks = 1', 'SUCCESS', 'ERROR', DATEDIFF(ms, @t0, SYSDATETIME()), NULL, ERROR_NUMBER(), ERROR_MESSAGE());
-END CATCH
-GO
--- ==========================================================================
--- TC032 | ElementTasks | IsChildElementTasks = 1 and IsReferenceElementTasks = 1
--- Expected: Child and reference tasks are both included. Rows >= max(TC030, TC031). No duplicates.
--- ==========================================================================
-PRINT '>> TC032 - IsChildElementTasks = 1 and IsReferenceElementTasks = 1';
-SELECT 'TC032' AS TestCase, 'IsChildElementTasks = 1 and IsReferenceElementTasks = 1' AS Title;
-DECLARE @t0 datetime2 = SYSDATETIME();
-BEGIN TRY
-    DECLARE @p2 Tag.TagModelTVP;
-    INSERT INTO @p2 VALUES (6737,N'BSP',0,366713,NULL,28,366713,5031,410129,0,NULL,'0001-01-01 00:00:00');
-    DECLARE @p9 WorkFlow.ProcessActivityFilterValueTVP;
-    DECLARE @p10 WorkFlow.ProcessActivityFilterValueTVP;
-    DECLARE @p13 WorkFlow.ProcessActivityFilterValueTVP;
-    DECLARE @p14 WorkFlow.ProcessActivityFilterValueTVP;
-    SET @t0 = SYSDATETIME();
-    BEGIN TRAN;
-    EXEC [WorkFlow].[uspGetProcessActivities]
-         @EndDate=NULL
-        ,@FilterTags=@p2
-        ,@IsMobileEnabled=NULL
-        ,@IsOpenActivity=1
-        ,@IsChildElementTasks=1
-        ,@ProcessTitle=1
-        ,@IsPersistentDataRequired=NULL
-        ,@ProcessDateFilterAppliesTo=1
-        ,@ProcessStatus=@p9
-        ,@ProcessPriorities=@p10
-        ,@IsReferenceElementTasks=1
-        ,@StartDate=NULL
-        ,@ProcessTypes=@p13
-        ,@ProcessTriggers=@p14
-        ,@UserID=285
-        ,@RoleID=346314
-        ,@ParentProcessInstanceID=0;
-    IF @@TRANCOUNT > 0 ROLLBACK TRAN;
-    INSERT INTO #TestResults (TestCase, Title, Expectation, Outcome, DurationMs, MaxDurationMs, ErrorNumber, ErrorMessage)
-    VALUES ('TC032', 'IsChildElementTasks = 1 and IsReferenceElementTasks = 1', 'SUCCESS', 'SUCCESS', DATEDIFF(ms, @t0, SYSDATETIME()), NULL, NULL, NULL);
-END TRY
-BEGIN CATCH
-    IF @@TRANCOUNT > 0 ROLLBACK TRAN;
-    INSERT INTO #TestResults (TestCase, Title, Expectation, Outcome, DurationMs, MaxDurationMs, ErrorNumber, ErrorMessage)
-    VALUES ('TC032', 'IsChildElementTasks = 1 and IsReferenceElementTasks = 1', 'SUCCESS', 'ERROR', DATEDIFF(ms, @t0, SYSDATETIME()), NULL, ERROR_NUMBER(), ERROR_MESSAGE());
-END CATCH
-GO
--- ==========================================================================
--- TC033 | ElementTasks | IsChildElementTasks = NULL and IsReferenceElementTasks = NULL
--- Expected: No error. Behaves the same as 0, or as the defaults documented in the procedure.
--- ==========================================================================
-PRINT '>> TC033 - IsChildElementTasks = NULL and IsReferenceElementTasks = NULL';
-SELECT 'TC033' AS TestCase, 'IsChildElementTasks = NULL and IsReferenceElementTasks = NULL' AS Title;
-DECLARE @t0 datetime2 = SYSDATETIME();
-BEGIN TRY
-    DECLARE @p2 Tag.TagModelTVP;
-    INSERT INTO @p2 VALUES (6737,N'BSP',0,366713,NULL,28,366713,5031,410129,0,NULL,'0001-01-01 00:00:00');
-    DECLARE @p9 WorkFlow.ProcessActivityFilterValueTVP;
-    DECLARE @p10 WorkFlow.ProcessActivityFilterValueTVP;
-    DECLARE @p13 WorkFlow.ProcessActivityFilterValueTVP;
-    DECLARE @p14 WorkFlow.ProcessActivityFilterValueTVP;
-    SET @t0 = SYSDATETIME();
-    BEGIN TRAN;
-    EXEC [WorkFlow].[uspGetProcessActivities]
-         @EndDate=NULL
-        ,@FilterTags=@p2
-        ,@IsMobileEnabled=NULL
-        ,@IsOpenActivity=1
-        ,@IsChildElementTasks=NULL
-        ,@ProcessTitle=1
-        ,@IsPersistentDataRequired=NULL
-        ,@ProcessDateFilterAppliesTo=1
-        ,@ProcessStatus=@p9
-        ,@ProcessPriorities=@p10
-        ,@IsReferenceElementTasks=NULL
-        ,@StartDate=NULL
-        ,@ProcessTypes=@p13
-        ,@ProcessTriggers=@p14
-        ,@UserID=285
-        ,@RoleID=346314
-        ,@ParentProcessInstanceID=0;
-    IF @@TRANCOUNT > 0 ROLLBACK TRAN;
-    INSERT INTO #TestResults (TestCase, Title, Expectation, Outcome, DurationMs, MaxDurationMs, ErrorNumber, ErrorMessage)
-    VALUES ('TC033', 'IsChildElementTasks = NULL and IsReferenceElementTasks = NULL', 'SUCCESS', 'SUCCESS', DATEDIFF(ms, @t0, SYSDATETIME()), NULL, NULL, NULL);
-END TRY
-BEGIN CATCH
-    IF @@TRANCOUNT > 0 ROLLBACK TRAN;
-    INSERT INTO #TestResults (TestCase, Title, Expectation, Outcome, DurationMs, MaxDurationMs, ErrorNumber, ErrorMessage)
-    VALUES ('TC033', 'IsChildElementTasks = NULL and IsReferenceElementTasks = NULL', 'SUCCESS', 'ERROR', DATEDIFF(ms, @t0, SYSDATETIME()), NULL, ERROR_NUMBER(), ERROR_MESSAGE());
-END CATCH
-GO
--- ==========================================================================
--- TC040 | IsMobileEnabled | IsMobileEnabled = 1
--- Expected: Only activities whose process is mobile-enabled. Subset of TC001.
--- ==========================================================================
-PRINT '>> TC040 - IsMobileEnabled = 1';
-SELECT 'TC040' AS TestCase, 'IsMobileEnabled = 1' AS Title;
-DECLARE @t0 datetime2 = SYSDATETIME();
-BEGIN TRY
-    DECLARE @p2 Tag.TagModelTVP;
-    INSERT INTO @p2 VALUES (6737,N'BSP',0,366713,NULL,28,366713,5031,410129,0,NULL,'0001-01-01 00:00:00');
-    DECLARE @p9 WorkFlow.ProcessActivityFilterValueTVP;
-    DECLARE @p10 WorkFlow.ProcessActivityFilterValueTVP;
-    DECLARE @p13 WorkFlow.ProcessActivityFilterValueTVP;
-    DECLARE @p14 WorkFlow.ProcessActivityFilterValueTVP;
-    SET @t0 = SYSDATETIME();
-    BEGIN TRAN;
-    EXEC [WorkFlow].[uspGetProcessActivities]
-         @EndDate=NULL
-        ,@FilterTags=@p2
-        ,@IsMobileEnabled=1
-        ,@IsOpenActivity=1
-        ,@IsChildElementTasks=0
-        ,@ProcessTitle=1
-        ,@IsPersistentDataRequired=NULL
-        ,@ProcessDateFilterAppliesTo=1
-        ,@ProcessStatus=@p9
-        ,@ProcessPriorities=@p10
-        ,@IsReferenceElementTasks=0
-        ,@StartDate=NULL
-        ,@ProcessTypes=@p13
-        ,@ProcessTriggers=@p14
-        ,@UserID=285
-        ,@RoleID=346314
-        ,@ParentProcessInstanceID=0;
-    IF @@TRANCOUNT > 0 ROLLBACK TRAN;
-    INSERT INTO #TestResults (TestCase, Title, Expectation, Outcome, DurationMs, MaxDurationMs, ErrorNumber, ErrorMessage)
-    VALUES ('TC040', 'IsMobileEnabled = 1', 'SUCCESS', 'SUCCESS', DATEDIFF(ms, @t0, SYSDATETIME()), NULL, NULL, NULL);
-END TRY
-BEGIN CATCH
-    IF @@TRANCOUNT > 0 ROLLBACK TRAN;
-    INSERT INTO #TestResults (TestCase, Title, Expectation, Outcome, DurationMs, MaxDurationMs, ErrorNumber, ErrorMessage)
-    VALUES ('TC040', 'IsMobileEnabled = 1', 'SUCCESS', 'ERROR', DATEDIFF(ms, @t0, SYSDATETIME()), NULL, ERROR_NUMBER(), ERROR_MESSAGE());
-END CATCH
-GO
--- ==========================================================================
--- TC041 | IsMobileEnabled | IsMobileEnabled = 0
--- Expected: Only activities that are not mobile-enabled (or no filter). TC040 + TC041 should equal TC001.
--- ==========================================================================
-PRINT '>> TC041 - IsMobileEnabled = 0';
-SELECT 'TC041' AS TestCase, 'IsMobileEnabled = 0' AS Title;
-DECLARE @t0 datetime2 = SYSDATETIME();
-BEGIN TRY
-    DECLARE @p2 Tag.TagModelTVP;
-    INSERT INTO @p2 VALUES (6737,N'BSP',0,366713,NULL,28,366713,5031,410129,0,NULL,'0001-01-01 00:00:00');
-    DECLARE @p9 WorkFlow.ProcessActivityFilterValueTVP;
-    DECLARE @p10 WorkFlow.ProcessActivityFilterValueTVP;
-    DECLARE @p13 WorkFlow.ProcessActivityFilterValueTVP;
-    DECLARE @p14 WorkFlow.ProcessActivityFilterValueTVP;
-    SET @t0 = SYSDATETIME();
-    BEGIN TRAN;
-    EXEC [WorkFlow].[uspGetProcessActivities]
-         @EndDate=NULL
-        ,@FilterTags=@p2
-        ,@IsMobileEnabled=0
-        ,@IsOpenActivity=1
-        ,@IsChildElementTasks=0
-        ,@ProcessTitle=1
-        ,@IsPersistentDataRequired=NULL
-        ,@ProcessDateFilterAppliesTo=1
-        ,@ProcessStatus=@p9
-        ,@ProcessPriorities=@p10
-        ,@IsReferenceElementTasks=0
-        ,@StartDate=NULL
-        ,@ProcessTypes=@p13
-        ,@ProcessTriggers=@p14
-        ,@UserID=285
-        ,@RoleID=346314
-        ,@ParentProcessInstanceID=0;
-    IF @@TRANCOUNT > 0 ROLLBACK TRAN;
-    INSERT INTO #TestResults (TestCase, Title, Expectation, Outcome, DurationMs, MaxDurationMs, ErrorNumber, ErrorMessage)
-    VALUES ('TC041', 'IsMobileEnabled = 0', 'SUCCESS', 'SUCCESS', DATEDIFF(ms, @t0, SYSDATETIME()), NULL, NULL, NULL);
-END TRY
-BEGIN CATCH
-    IF @@TRANCOUNT > 0 ROLLBACK TRAN;
-    INSERT INTO #TestResults (TestCase, Title, Expectation, Outcome, DurationMs, MaxDurationMs, ErrorNumber, ErrorMessage)
-    VALUES ('TC041', 'IsMobileEnabled = 0', 'SUCCESS', 'ERROR', DATEDIFF(ms, @t0, SYSDATETIME()), NULL, ERROR_NUMBER(), ERROR_MESSAGE());
-END CATCH
-GO
--- ==========================================================================
--- TC045 | IsPersistentDataRequired | IsPersistentDataRequired = 1
--- Expected: Persistent data columns or result set are returned and populated. Activity rows match TC001.
--- ==========================================================================
-PRINT '>> TC045 - IsPersistentDataRequired = 1';
-SELECT 'TC045' AS TestCase, 'IsPersistentDataRequired = 1' AS Title;
-DECLARE @t0 datetime2 = SYSDATETIME();
-BEGIN TRY
-    DECLARE @p2 Tag.TagModelTVP;
-    INSERT INTO @p2 VALUES (6737,N'BSP',0,366713,NULL,28,366713,5031,410129,0,NULL,'0001-01-01 00:00:00');
-    DECLARE @p9 WorkFlow.ProcessActivityFilterValueTVP;
-    DECLARE @p10 WorkFlow.ProcessActivityFilterValueTVP;
-    DECLARE @p13 WorkFlow.ProcessActivityFilterValueTVP;
-    DECLARE @p14 WorkFlow.ProcessActivityFilterValueTVP;
-    SET @t0 = SYSDATETIME();
-    BEGIN TRAN;
-    EXEC [WorkFlow].[uspGetProcessActivities]
-         @EndDate=NULL
-        ,@FilterTags=@p2
-        ,@IsMobileEnabled=NULL
-        ,@IsOpenActivity=1
-        ,@IsChildElementTasks=0
-        ,@ProcessTitle=1
-        ,@IsPersistentDataRequired=1
-        ,@ProcessDateFilterAppliesTo=1
-        ,@ProcessStatus=@p9
-        ,@ProcessPriorities=@p10
-        ,@IsReferenceElementTasks=0
-        ,@StartDate=NULL
-        ,@ProcessTypes=@p13
-        ,@ProcessTriggers=@p14
-        ,@UserID=285
-        ,@RoleID=346314
-        ,@ParentProcessInstanceID=0;
-    IF @@TRANCOUNT > 0 ROLLBACK TRAN;
-    INSERT INTO #TestResults (TestCase, Title, Expectation, Outcome, DurationMs, MaxDurationMs, ErrorNumber, ErrorMessage)
-    VALUES ('TC045', 'IsPersistentDataRequired = 1', 'SUCCESS', 'SUCCESS', DATEDIFF(ms, @t0, SYSDATETIME()), NULL, NULL, NULL);
-END TRY
-BEGIN CATCH
-    IF @@TRANCOUNT > 0 ROLLBACK TRAN;
-    INSERT INTO #TestResults (TestCase, Title, Expectation, Outcome, DurationMs, MaxDurationMs, ErrorNumber, ErrorMessage)
-    VALUES ('TC045', 'IsPersistentDataRequired = 1', 'SUCCESS', 'ERROR', DATEDIFF(ms, @t0, SYSDATETIME()), NULL, ERROR_NUMBER(), ERROR_MESSAGE());
-END CATCH
-GO
--- ==========================================================================
--- TC046 | IsPersistentDataRequired | IsPersistentDataRequired = 0
--- Expected: Same as TC001 (NULL and 0 behave the same).
--- ==========================================================================
-PRINT '>> TC046 - IsPersistentDataRequired = 0';
-SELECT 'TC046' AS TestCase, 'IsPersistentDataRequired = 0' AS Title;
-DECLARE @t0 datetime2 = SYSDATETIME();
-BEGIN TRY
-    DECLARE @p2 Tag.TagModelTVP;
-    INSERT INTO @p2 VALUES (6737,N'BSP',0,366713,NULL,28,366713,5031,410129,0,NULL,'0001-01-01 00:00:00');
-    DECLARE @p9 WorkFlow.ProcessActivityFilterValueTVP;
-    DECLARE @p10 WorkFlow.ProcessActivityFilterValueTVP;
-    DECLARE @p13 WorkFlow.ProcessActivityFilterValueTVP;
-    DECLARE @p14 WorkFlow.ProcessActivityFilterValueTVP;
-    SET @t0 = SYSDATETIME();
-    BEGIN TRAN;
-    EXEC [WorkFlow].[uspGetProcessActivities]
-         @EndDate=NULL
-        ,@FilterTags=@p2
-        ,@IsMobileEnabled=NULL
-        ,@IsOpenActivity=1
-        ,@IsChildElementTasks=0
-        ,@ProcessTitle=1
-        ,@IsPersistentDataRequired=0
-        ,@ProcessDateFilterAppliesTo=1
-        ,@ProcessStatus=@p9
-        ,@ProcessPriorities=@p10
-        ,@IsReferenceElementTasks=0
-        ,@StartDate=NULL
-        ,@ProcessTypes=@p13
-        ,@ProcessTriggers=@p14
-        ,@UserID=285
-        ,@RoleID=346314
-        ,@ParentProcessInstanceID=0;
-    IF @@TRANCOUNT > 0 ROLLBACK TRAN;
-    INSERT INTO #TestResults (TestCase, Title, Expectation, Outcome, DurationMs, MaxDurationMs, ErrorNumber, ErrorMessage)
-    VALUES ('TC046', 'IsPersistentDataRequired = 0', 'SUCCESS', 'SUCCESS', DATEDIFF(ms, @t0, SYSDATETIME()), NULL, NULL, NULL);
-END TRY
-BEGIN CATCH
-    IF @@TRANCOUNT > 0 ROLLBACK TRAN;
-    INSERT INTO #TestResults (TestCase, Title, Expectation, Outcome, DurationMs, MaxDurationMs, ErrorNumber, ErrorMessage)
-    VALUES ('TC046', 'IsPersistentDataRequired = 0', 'SUCCESS', 'ERROR', DATEDIFF(ms, @t0, SYSDATETIME()), NULL, ERROR_NUMBER(), ERROR_MESSAGE());
-END CATCH
-GO
--- ==========================================================================
--- TC050 | ProcessTitle | ProcessTitle = 0
--- Expected: No error. Process title column or result set is omitted or changed per the definition. Activity rows match TC001.
--- ==========================================================================
-PRINT '>> TC050 - ProcessTitle = 0';
-SELECT 'TC050' AS TestCase, 'ProcessTitle = 0' AS Title;
-DECLARE @t0 datetime2 = SYSDATETIME();
-BEGIN TRY
-    DECLARE @p2 Tag.TagModelTVP;
-    INSERT INTO @p2 VALUES (6737,N'BSP',0,366713,NULL,28,366713,5031,410129,0,NULL,'0001-01-01 00:00:00');
-    DECLARE @p9 WorkFlow.ProcessActivityFilterValueTVP;
-    DECLARE @p10 WorkFlow.ProcessActivityFilterValueTVP;
-    DECLARE @p13 WorkFlow.ProcessActivityFilterValueTVP;
-    DECLARE @p14 WorkFlow.ProcessActivityFilterValueTVP;
-    SET @t0 = SYSDATETIME();
-    BEGIN TRAN;
     EXEC [WorkFlow].[uspGetProcessActivities]
          @EndDate=NULL
         ,@FilterTags=@p2
@@ -785,22 +263,23 @@ BEGIN TRY
         ,@UserID=285
         ,@RoleID=346314
         ,@ParentProcessInstanceID=0;
+    DECLARE @ms int = DATEDIFF(ms, @t0, SYSDATETIME());
     IF @@TRANCOUNT > 0 ROLLBACK TRAN;
     INSERT INTO #TestResults (TestCase, Title, Expectation, Outcome, DurationMs, MaxDurationMs, ErrorNumber, ErrorMessage)
-    VALUES ('TC050', 'ProcessTitle = 0', 'SUCCESS', 'SUCCESS', DATEDIFF(ms, @t0, SYSDATETIME()), NULL, NULL, NULL);
+    VALUES ('TC007', 'ProcessTitle = 0 (undefined value)', 'SUCCESS', 'SUCCESS', @ms, NULL, NULL, NULL);
 END TRY
 BEGIN CATCH
     IF @@TRANCOUNT > 0 ROLLBACK TRAN;
     INSERT INTO #TestResults (TestCase, Title, Expectation, Outcome, DurationMs, MaxDurationMs, ErrorNumber, ErrorMessage)
-    VALUES ('TC050', 'ProcessTitle = 0', 'SUCCESS', 'ERROR', DATEDIFF(ms, @t0, SYSDATETIME()), NULL, ERROR_NUMBER(), ERROR_MESSAGE());
+    VALUES ('TC007', 'ProcessTitle = 0 (undefined value)', 'SUCCESS', 'ERROR', DATEDIFF(ms, @t0, SYSDATETIME()), NULL, ERROR_NUMBER(), ERROR_MESSAGE());
 END CATCH
 GO
 -- ==========================================================================
--- TC051 | ProcessTitle | ProcessTitle = NULL
--- Expected: No error. Behaves the same as 0 or as the default.
+-- TC008 | ProcessTitle | ProcessTitle = NULL
+-- Expected: No error. Behaves like TC007 (every comparison with NULL is false).
 -- ==========================================================================
-PRINT '>> TC051 - ProcessTitle = NULL';
-SELECT 'TC051' AS TestCase, 'ProcessTitle = NULL' AS Title;
+PRINT '>> TC008 - ProcessTitle = NULL';
+SELECT 'TC008' AS TestCase, 'ProcessTitle = NULL' AS Title;
 DECLARE @t0 datetime2 = SYSDATETIME();
 BEGIN TRY
     DECLARE @p2 Tag.TagModelTVP;
@@ -809,8 +288,8 @@ BEGIN TRY
     DECLARE @p10 WorkFlow.ProcessActivityFilterValueTVP;
     DECLARE @p13 WorkFlow.ProcessActivityFilterValueTVP;
     DECLARE @p14 WorkFlow.ProcessActivityFilterValueTVP;
-    SET @t0 = SYSDATETIME();
     BEGIN TRAN;
+    SET @t0 = SYSDATETIME();
     EXEC [WorkFlow].[uspGetProcessActivities]
          @EndDate=NULL
         ,@FilterTags=@p2
@@ -829,473 +308,32 @@ BEGIN TRY
         ,@UserID=285
         ,@RoleID=346314
         ,@ParentProcessInstanceID=0;
+    DECLARE @ms int = DATEDIFF(ms, @t0, SYSDATETIME());
     IF @@TRANCOUNT > 0 ROLLBACK TRAN;
     INSERT INTO #TestResults (TestCase, Title, Expectation, Outcome, DurationMs, MaxDurationMs, ErrorNumber, ErrorMessage)
-    VALUES ('TC051', 'ProcessTitle = NULL', 'SUCCESS', 'SUCCESS', DATEDIFF(ms, @t0, SYSDATETIME()), NULL, NULL, NULL);
+    VALUES ('TC008', 'ProcessTitle = NULL', 'SUCCESS', 'SUCCESS', @ms, NULL, NULL, NULL);
 END TRY
 BEGIN CATCH
     IF @@TRANCOUNT > 0 ROLLBACK TRAN;
     INSERT INTO #TestResults (TestCase, Title, Expectation, Outcome, DurationMs, MaxDurationMs, ErrorNumber, ErrorMessage)
-    VALUES ('TC051', 'ProcessTitle = NULL', 'SUCCESS', 'ERROR', DATEDIFF(ms, @t0, SYSDATETIME()), NULL, ERROR_NUMBER(), ERROR_MESSAGE());
+    VALUES ('TC008', 'ProcessTitle = NULL', 'SUCCESS', 'ERROR', DATEDIFF(ms, @t0, SYSDATETIME()), NULL, ERROR_NUMBER(), ERROR_MESSAGE());
 END CATCH
 GO
 -- ==========================================================================
--- TC060 | DateRange | StartDate only
--- Expected: Only activities whose date (per ProcessDateFilterAppliesTo=1) is on or after $(StartDate).
+-- TC010 | FilterTags | Empty @FilterTags
+-- Expected: No error. NF.uspGetElementsByTags_OPT receives no tags, so no tag-based activities. Activities executed directly by user 285 (Executor = 285) are still returned.
 -- ==========================================================================
-PRINT '>> TC060 - StartDate only';
-SELECT 'TC060' AS TestCase, 'StartDate only' AS Title;
+PRINT '>> TC010 - Empty @FilterTags';
+SELECT 'TC010' AS TestCase, 'Empty @FilterTags' AS Title;
 DECLARE @t0 datetime2 = SYSDATETIME();
 BEGIN TRY
     DECLARE @p2 Tag.TagModelTVP;
-    INSERT INTO @p2 VALUES (6737,N'BSP',0,366713,NULL,28,366713,5031,410129,0,NULL,'0001-01-01 00:00:00');
     DECLARE @p9 WorkFlow.ProcessActivityFilterValueTVP;
     DECLARE @p10 WorkFlow.ProcessActivityFilterValueTVP;
     DECLARE @p13 WorkFlow.ProcessActivityFilterValueTVP;
     DECLARE @p14 WorkFlow.ProcessActivityFilterValueTVP;
-    SET @t0 = SYSDATETIME();
     BEGIN TRAN;
-    EXEC [WorkFlow].[uspGetProcessActivities]
-         @EndDate=NULL
-        ,@FilterTags=@p2
-        ,@IsMobileEnabled=NULL
-        ,@IsOpenActivity=1
-        ,@IsChildElementTasks=0
-        ,@ProcessTitle=1
-        ,@IsPersistentDataRequired=NULL
-        ,@ProcessDateFilterAppliesTo=1
-        ,@ProcessStatus=@p9
-        ,@ProcessPriorities=@p10
-        ,@IsReferenceElementTasks=0
-        ,@StartDate='$(StartDate)'
-        ,@ProcessTypes=@p13
-        ,@ProcessTriggers=@p14
-        ,@UserID=285
-        ,@RoleID=346314
-        ,@ParentProcessInstanceID=0;
-    IF @@TRANCOUNT > 0 ROLLBACK TRAN;
-    INSERT INTO #TestResults (TestCase, Title, Expectation, Outcome, DurationMs, MaxDurationMs, ErrorNumber, ErrorMessage)
-    VALUES ('TC060', 'StartDate only', 'SUCCESS', 'SUCCESS', DATEDIFF(ms, @t0, SYSDATETIME()), NULL, NULL, NULL);
-END TRY
-BEGIN CATCH
-    IF @@TRANCOUNT > 0 ROLLBACK TRAN;
-    INSERT INTO #TestResults (TestCase, Title, Expectation, Outcome, DurationMs, MaxDurationMs, ErrorNumber, ErrorMessage)
-    VALUES ('TC060', 'StartDate only', 'SUCCESS', 'ERROR', DATEDIFF(ms, @t0, SYSDATETIME()), NULL, ERROR_NUMBER(), ERROR_MESSAGE());
-END CATCH
-GO
--- ==========================================================================
--- TC061 | DateRange | EndDate only
--- Expected: Only activities whose date is on or before $(EndDate).
--- ==========================================================================
-PRINT '>> TC061 - EndDate only';
-SELECT 'TC061' AS TestCase, 'EndDate only' AS Title;
-DECLARE @t0 datetime2 = SYSDATETIME();
-BEGIN TRY
-    DECLARE @p2 Tag.TagModelTVP;
-    INSERT INTO @p2 VALUES (6737,N'BSP',0,366713,NULL,28,366713,5031,410129,0,NULL,'0001-01-01 00:00:00');
-    DECLARE @p9 WorkFlow.ProcessActivityFilterValueTVP;
-    DECLARE @p10 WorkFlow.ProcessActivityFilterValueTVP;
-    DECLARE @p13 WorkFlow.ProcessActivityFilterValueTVP;
-    DECLARE @p14 WorkFlow.ProcessActivityFilterValueTVP;
     SET @t0 = SYSDATETIME();
-    BEGIN TRAN;
-    EXEC [WorkFlow].[uspGetProcessActivities]
-         @EndDate='$(EndDate)'
-        ,@FilterTags=@p2
-        ,@IsMobileEnabled=NULL
-        ,@IsOpenActivity=1
-        ,@IsChildElementTasks=0
-        ,@ProcessTitle=1
-        ,@IsPersistentDataRequired=NULL
-        ,@ProcessDateFilterAppliesTo=1
-        ,@ProcessStatus=@p9
-        ,@ProcessPriorities=@p10
-        ,@IsReferenceElementTasks=0
-        ,@StartDate=NULL
-        ,@ProcessTypes=@p13
-        ,@ProcessTriggers=@p14
-        ,@UserID=285
-        ,@RoleID=346314
-        ,@ParentProcessInstanceID=0;
-    IF @@TRANCOUNT > 0 ROLLBACK TRAN;
-    INSERT INTO #TestResults (TestCase, Title, Expectation, Outcome, DurationMs, MaxDurationMs, ErrorNumber, ErrorMessage)
-    VALUES ('TC061', 'EndDate only', 'SUCCESS', 'SUCCESS', DATEDIFF(ms, @t0, SYSDATETIME()), NULL, NULL, NULL);
-END TRY
-BEGIN CATCH
-    IF @@TRANCOUNT > 0 ROLLBACK TRAN;
-    INSERT INTO #TestResults (TestCase, Title, Expectation, Outcome, DurationMs, MaxDurationMs, ErrorNumber, ErrorMessage)
-    VALUES ('TC061', 'EndDate only', 'SUCCESS', 'ERROR', DATEDIFF(ms, @t0, SYSDATETIME()), NULL, ERROR_NUMBER(), ERROR_MESSAGE());
-END CATCH
-GO
--- ==========================================================================
--- TC062 | DateRange | StartDate and EndDate (valid range)
--- Expected: Only activities within [$(StartDate), $(EndDate)]. This is the intersection of TC060 and TC061.
--- ==========================================================================
-PRINT '>> TC062 - StartDate and EndDate (valid range)';
-SELECT 'TC062' AS TestCase, 'StartDate and EndDate (valid range)' AS Title;
-DECLARE @t0 datetime2 = SYSDATETIME();
-BEGIN TRY
-    DECLARE @p2 Tag.TagModelTVP;
-    INSERT INTO @p2 VALUES (6737,N'BSP',0,366713,NULL,28,366713,5031,410129,0,NULL,'0001-01-01 00:00:00');
-    DECLARE @p9 WorkFlow.ProcessActivityFilterValueTVP;
-    DECLARE @p10 WorkFlow.ProcessActivityFilterValueTVP;
-    DECLARE @p13 WorkFlow.ProcessActivityFilterValueTVP;
-    DECLARE @p14 WorkFlow.ProcessActivityFilterValueTVP;
-    SET @t0 = SYSDATETIME();
-    BEGIN TRAN;
-    EXEC [WorkFlow].[uspGetProcessActivities]
-         @EndDate='$(EndDate)'
-        ,@FilterTags=@p2
-        ,@IsMobileEnabled=NULL
-        ,@IsOpenActivity=1
-        ,@IsChildElementTasks=0
-        ,@ProcessTitle=1
-        ,@IsPersistentDataRequired=NULL
-        ,@ProcessDateFilterAppliesTo=1
-        ,@ProcessStatus=@p9
-        ,@ProcessPriorities=@p10
-        ,@IsReferenceElementTasks=0
-        ,@StartDate='$(StartDate)'
-        ,@ProcessTypes=@p13
-        ,@ProcessTriggers=@p14
-        ,@UserID=285
-        ,@RoleID=346314
-        ,@ParentProcessInstanceID=0;
-    IF @@TRANCOUNT > 0 ROLLBACK TRAN;
-    INSERT INTO #TestResults (TestCase, Title, Expectation, Outcome, DurationMs, MaxDurationMs, ErrorNumber, ErrorMessage)
-    VALUES ('TC062', 'StartDate and EndDate (valid range)', 'SUCCESS', 'SUCCESS', DATEDIFF(ms, @t0, SYSDATETIME()), NULL, NULL, NULL);
-END TRY
-BEGIN CATCH
-    IF @@TRANCOUNT > 0 ROLLBACK TRAN;
-    INSERT INTO #TestResults (TestCase, Title, Expectation, Outcome, DurationMs, MaxDurationMs, ErrorNumber, ErrorMessage)
-    VALUES ('TC062', 'StartDate and EndDate (valid range)', 'SUCCESS', 'ERROR', DATEDIFF(ms, @t0, SYSDATETIME()), NULL, ERROR_NUMBER(), ERROR_MESSAGE());
-END CATCH
-GO
--- ==========================================================================
--- TC063 | DateRange | StartDate later than EndDate
--- Expected: No error, zero rows (or a meaningful validation error if the procedure validates the range).
--- ==========================================================================
-PRINT '>> TC063 - StartDate later than EndDate';
-SELECT 'TC063' AS TestCase, 'StartDate later than EndDate' AS Title;
-DECLARE @t0 datetime2 = SYSDATETIME();
-BEGIN TRY
-    DECLARE @p2 Tag.TagModelTVP;
-    INSERT INTO @p2 VALUES (6737,N'BSP',0,366713,NULL,28,366713,5031,410129,0,NULL,'0001-01-01 00:00:00');
-    DECLARE @p9 WorkFlow.ProcessActivityFilterValueTVP;
-    DECLARE @p10 WorkFlow.ProcessActivityFilterValueTVP;
-    DECLARE @p13 WorkFlow.ProcessActivityFilterValueTVP;
-    DECLARE @p14 WorkFlow.ProcessActivityFilterValueTVP;
-    SET @t0 = SYSDATETIME();
-    BEGIN TRAN;
-    EXEC [WorkFlow].[uspGetProcessActivities]
-         @EndDate='$(StartDate)'
-        ,@FilterTags=@p2
-        ,@IsMobileEnabled=NULL
-        ,@IsOpenActivity=1
-        ,@IsChildElementTasks=0
-        ,@ProcessTitle=1
-        ,@IsPersistentDataRequired=NULL
-        ,@ProcessDateFilterAppliesTo=1
-        ,@ProcessStatus=@p9
-        ,@ProcessPriorities=@p10
-        ,@IsReferenceElementTasks=0
-        ,@StartDate='$(EndDate)'
-        ,@ProcessTypes=@p13
-        ,@ProcessTriggers=@p14
-        ,@UserID=285
-        ,@RoleID=346314
-        ,@ParentProcessInstanceID=0;
-    IF @@TRANCOUNT > 0 ROLLBACK TRAN;
-    INSERT INTO #TestResults (TestCase, Title, Expectation, Outcome, DurationMs, MaxDurationMs, ErrorNumber, ErrorMessage)
-    VALUES ('TC063', 'StartDate later than EndDate', 'ANY', 'SUCCESS', DATEDIFF(ms, @t0, SYSDATETIME()), NULL, NULL, NULL);
-END TRY
-BEGIN CATCH
-    IF @@TRANCOUNT > 0 ROLLBACK TRAN;
-    INSERT INTO #TestResults (TestCase, Title, Expectation, Outcome, DurationMs, MaxDurationMs, ErrorNumber, ErrorMessage)
-    VALUES ('TC063', 'StartDate later than EndDate', 'ANY', 'ERROR', DATEDIFF(ms, @t0, SYSDATETIME()), NULL, ERROR_NUMBER(), ERROR_MESSAGE());
-END CATCH
-GO
--- ==========================================================================
--- TC064 | DateRange | StartDate = EndDate (single day)
--- Expected: Includes activities at any time on that day. Watch for a time-portion bug where EndDate midnight excludes the rest of the day.
--- ==========================================================================
-PRINT '>> TC064 - StartDate = EndDate (single day)';
-SELECT 'TC064' AS TestCase, 'StartDate = EndDate (single day)' AS Title;
-DECLARE @t0 datetime2 = SYSDATETIME();
-BEGIN TRY
-    DECLARE @p2 Tag.TagModelTVP;
-    INSERT INTO @p2 VALUES (6737,N'BSP',0,366713,NULL,28,366713,5031,410129,0,NULL,'0001-01-01 00:00:00');
-    DECLARE @p9 WorkFlow.ProcessActivityFilterValueTVP;
-    DECLARE @p10 WorkFlow.ProcessActivityFilterValueTVP;
-    DECLARE @p13 WorkFlow.ProcessActivityFilterValueTVP;
-    DECLARE @p14 WorkFlow.ProcessActivityFilterValueTVP;
-    SET @t0 = SYSDATETIME();
-    BEGIN TRAN;
-    EXEC [WorkFlow].[uspGetProcessActivities]
-         @EndDate='$(StartDate)'
-        ,@FilterTags=@p2
-        ,@IsMobileEnabled=NULL
-        ,@IsOpenActivity=1
-        ,@IsChildElementTasks=0
-        ,@ProcessTitle=1
-        ,@IsPersistentDataRequired=NULL
-        ,@ProcessDateFilterAppliesTo=1
-        ,@ProcessStatus=@p9
-        ,@ProcessPriorities=@p10
-        ,@IsReferenceElementTasks=0
-        ,@StartDate='$(StartDate)'
-        ,@ProcessTypes=@p13
-        ,@ProcessTriggers=@p14
-        ,@UserID=285
-        ,@RoleID=346314
-        ,@ParentProcessInstanceID=0;
-    IF @@TRANCOUNT > 0 ROLLBACK TRAN;
-    INSERT INTO #TestResults (TestCase, Title, Expectation, Outcome, DurationMs, MaxDurationMs, ErrorNumber, ErrorMessage)
-    VALUES ('TC064', 'StartDate = EndDate (single day)', 'SUCCESS', 'SUCCESS', DATEDIFF(ms, @t0, SYSDATETIME()), NULL, NULL, NULL);
-END TRY
-BEGIN CATCH
-    IF @@TRANCOUNT > 0 ROLLBACK TRAN;
-    INSERT INTO #TestResults (TestCase, Title, Expectation, Outcome, DurationMs, MaxDurationMs, ErrorNumber, ErrorMessage)
-    VALUES ('TC064', 'StartDate = EndDate (single day)', 'SUCCESS', 'ERROR', DATEDIFF(ms, @t0, SYSDATETIME()), NULL, ERROR_NUMBER(), ERROR_MESSAGE());
-END CATCH
-GO
--- ==========================================================================
--- TC065 | DateRange | Widest range (1900-01-01 to 9999-12-31)
--- Expected: No overflow error. Same rows as TC001.
--- ==========================================================================
-PRINT '>> TC065 - Widest range (1900-01-01 to 9999-12-31)';
-SELECT 'TC065' AS TestCase, 'Widest range (1900-01-01 to 9999-12-31)' AS Title;
-DECLARE @t0 datetime2 = SYSDATETIME();
-BEGIN TRY
-    DECLARE @p2 Tag.TagModelTVP;
-    INSERT INTO @p2 VALUES (6737,N'BSP',0,366713,NULL,28,366713,5031,410129,0,NULL,'0001-01-01 00:00:00');
-    DECLARE @p9 WorkFlow.ProcessActivityFilterValueTVP;
-    DECLARE @p10 WorkFlow.ProcessActivityFilterValueTVP;
-    DECLARE @p13 WorkFlow.ProcessActivityFilterValueTVP;
-    DECLARE @p14 WorkFlow.ProcessActivityFilterValueTVP;
-    SET @t0 = SYSDATETIME();
-    BEGIN TRAN;
-    EXEC [WorkFlow].[uspGetProcessActivities]
-         @EndDate='9999-12-31'
-        ,@FilterTags=@p2
-        ,@IsMobileEnabled=NULL
-        ,@IsOpenActivity=1
-        ,@IsChildElementTasks=0
-        ,@ProcessTitle=1
-        ,@IsPersistentDataRequired=NULL
-        ,@ProcessDateFilterAppliesTo=1
-        ,@ProcessStatus=@p9
-        ,@ProcessPriorities=@p10
-        ,@IsReferenceElementTasks=0
-        ,@StartDate='1900-01-01'
-        ,@ProcessTypes=@p13
-        ,@ProcessTriggers=@p14
-        ,@UserID=285
-        ,@RoleID=346314
-        ,@ParentProcessInstanceID=0;
-    IF @@TRANCOUNT > 0 ROLLBACK TRAN;
-    INSERT INTO #TestResults (TestCase, Title, Expectation, Outcome, DurationMs, MaxDurationMs, ErrorNumber, ErrorMessage)
-    VALUES ('TC065', 'Widest range (1900-01-01 to 9999-12-31)', 'SUCCESS', 'SUCCESS', DATEDIFF(ms, @t0, SYSDATETIME()), NULL, NULL, NULL);
-END TRY
-BEGIN CATCH
-    IF @@TRANCOUNT > 0 ROLLBACK TRAN;
-    INSERT INTO #TestResults (TestCase, Title, Expectation, Outcome, DurationMs, MaxDurationMs, ErrorNumber, ErrorMessage)
-    VALUES ('TC065', 'Widest range (1900-01-01 to 9999-12-31)', 'SUCCESS', 'ERROR', DATEDIFF(ms, @t0, SYSDATETIME()), NULL, ERROR_NUMBER(), ERROR_MESSAGE());
-END CATCH
-GO
--- ==========================================================================
--- TC066 | DateRange | ProcessDateFilterAppliesTo = 2 with date range
--- Expected: The date range is applied to the alternative date column (e.g. due date instead of start date).
--- ==========================================================================
-PRINT '>> TC066 - ProcessDateFilterAppliesTo = 2 with date range';
-SELECT 'TC066' AS TestCase, 'ProcessDateFilterAppliesTo = 2 with date range' AS Title;
-DECLARE @t0 datetime2 = SYSDATETIME();
-BEGIN TRY
-    DECLARE @p2 Tag.TagModelTVP;
-    INSERT INTO @p2 VALUES (6737,N'BSP',0,366713,NULL,28,366713,5031,410129,0,NULL,'0001-01-01 00:00:00');
-    DECLARE @p9 WorkFlow.ProcessActivityFilterValueTVP;
-    DECLARE @p10 WorkFlow.ProcessActivityFilterValueTVP;
-    DECLARE @p13 WorkFlow.ProcessActivityFilterValueTVP;
-    DECLARE @p14 WorkFlow.ProcessActivityFilterValueTVP;
-    SET @t0 = SYSDATETIME();
-    BEGIN TRAN;
-    EXEC [WorkFlow].[uspGetProcessActivities]
-         @EndDate='$(EndDate)'
-        ,@FilterTags=@p2
-        ,@IsMobileEnabled=NULL
-        ,@IsOpenActivity=1
-        ,@IsChildElementTasks=0
-        ,@ProcessTitle=1
-        ,@IsPersistentDataRequired=NULL
-        ,@ProcessDateFilterAppliesTo=2
-        ,@ProcessStatus=@p9
-        ,@ProcessPriorities=@p10
-        ,@IsReferenceElementTasks=0
-        ,@StartDate='$(StartDate)'
-        ,@ProcessTypes=@p13
-        ,@ProcessTriggers=@p14
-        ,@UserID=285
-        ,@RoleID=346314
-        ,@ParentProcessInstanceID=0;
-    IF @@TRANCOUNT > 0 ROLLBACK TRAN;
-    INSERT INTO #TestResults (TestCase, Title, Expectation, Outcome, DurationMs, MaxDurationMs, ErrorNumber, ErrorMessage)
-    VALUES ('TC066', 'ProcessDateFilterAppliesTo = 2 with date range', 'SUCCESS', 'SUCCESS', DATEDIFF(ms, @t0, SYSDATETIME()), NULL, NULL, NULL);
-END TRY
-BEGIN CATCH
-    IF @@TRANCOUNT > 0 ROLLBACK TRAN;
-    INSERT INTO #TestResults (TestCase, Title, Expectation, Outcome, DurationMs, MaxDurationMs, ErrorNumber, ErrorMessage)
-    VALUES ('TC066', 'ProcessDateFilterAppliesTo = 2 with date range', 'SUCCESS', 'ERROR', DATEDIFF(ms, @t0, SYSDATETIME()), NULL, ERROR_NUMBER(), ERROR_MESSAGE());
-END CATCH
-GO
--- ==========================================================================
--- TC067 | DateRange | ProcessDateFilterAppliesTo = 0 with date range
--- Expected: No error. Either the date filter is ignored or a defined default applies.
--- ==========================================================================
-PRINT '>> TC067 - ProcessDateFilterAppliesTo = 0 with date range';
-SELECT 'TC067' AS TestCase, 'ProcessDateFilterAppliesTo = 0 with date range' AS Title;
-DECLARE @t0 datetime2 = SYSDATETIME();
-BEGIN TRY
-    DECLARE @p2 Tag.TagModelTVP;
-    INSERT INTO @p2 VALUES (6737,N'BSP',0,366713,NULL,28,366713,5031,410129,0,NULL,'0001-01-01 00:00:00');
-    DECLARE @p9 WorkFlow.ProcessActivityFilterValueTVP;
-    DECLARE @p10 WorkFlow.ProcessActivityFilterValueTVP;
-    DECLARE @p13 WorkFlow.ProcessActivityFilterValueTVP;
-    DECLARE @p14 WorkFlow.ProcessActivityFilterValueTVP;
-    SET @t0 = SYSDATETIME();
-    BEGIN TRAN;
-    EXEC [WorkFlow].[uspGetProcessActivities]
-         @EndDate='$(EndDate)'
-        ,@FilterTags=@p2
-        ,@IsMobileEnabled=NULL
-        ,@IsOpenActivity=1
-        ,@IsChildElementTasks=0
-        ,@ProcessTitle=1
-        ,@IsPersistentDataRequired=NULL
-        ,@ProcessDateFilterAppliesTo=0
-        ,@ProcessStatus=@p9
-        ,@ProcessPriorities=@p10
-        ,@IsReferenceElementTasks=0
-        ,@StartDate='$(StartDate)'
-        ,@ProcessTypes=@p13
-        ,@ProcessTriggers=@p14
-        ,@UserID=285
-        ,@RoleID=346314
-        ,@ParentProcessInstanceID=0;
-    IF @@TRANCOUNT > 0 ROLLBACK TRAN;
-    INSERT INTO #TestResults (TestCase, Title, Expectation, Outcome, DurationMs, MaxDurationMs, ErrorNumber, ErrorMessage)
-    VALUES ('TC067', 'ProcessDateFilterAppliesTo = 0 with date range', 'SUCCESS', 'SUCCESS', DATEDIFF(ms, @t0, SYSDATETIME()), NULL, NULL, NULL);
-END TRY
-BEGIN CATCH
-    IF @@TRANCOUNT > 0 ROLLBACK TRAN;
-    INSERT INTO #TestResults (TestCase, Title, Expectation, Outcome, DurationMs, MaxDurationMs, ErrorNumber, ErrorMessage)
-    VALUES ('TC067', 'ProcessDateFilterAppliesTo = 0 with date range', 'SUCCESS', 'ERROR', DATEDIFF(ms, @t0, SYSDATETIME()), NULL, ERROR_NUMBER(), ERROR_MESSAGE());
-END CATCH
-GO
--- ==========================================================================
--- TC068 | DateRange | ProcessDateFilterAppliesTo = NULL with date range
--- Expected: No error. Either the date filter is ignored or a defined default applies.
--- ==========================================================================
-PRINT '>> TC068 - ProcessDateFilterAppliesTo = NULL with date range';
-SELECT 'TC068' AS TestCase, 'ProcessDateFilterAppliesTo = NULL with date range' AS Title;
-DECLARE @t0 datetime2 = SYSDATETIME();
-BEGIN TRY
-    DECLARE @p2 Tag.TagModelTVP;
-    INSERT INTO @p2 VALUES (6737,N'BSP',0,366713,NULL,28,366713,5031,410129,0,NULL,'0001-01-01 00:00:00');
-    DECLARE @p9 WorkFlow.ProcessActivityFilterValueTVP;
-    DECLARE @p10 WorkFlow.ProcessActivityFilterValueTVP;
-    DECLARE @p13 WorkFlow.ProcessActivityFilterValueTVP;
-    DECLARE @p14 WorkFlow.ProcessActivityFilterValueTVP;
-    SET @t0 = SYSDATETIME();
-    BEGIN TRAN;
-    EXEC [WorkFlow].[uspGetProcessActivities]
-         @EndDate='$(EndDate)'
-        ,@FilterTags=@p2
-        ,@IsMobileEnabled=NULL
-        ,@IsOpenActivity=1
-        ,@IsChildElementTasks=0
-        ,@ProcessTitle=1
-        ,@IsPersistentDataRequired=NULL
-        ,@ProcessDateFilterAppliesTo=NULL
-        ,@ProcessStatus=@p9
-        ,@ProcessPriorities=@p10
-        ,@IsReferenceElementTasks=0
-        ,@StartDate='$(StartDate)'
-        ,@ProcessTypes=@p13
-        ,@ProcessTriggers=@p14
-        ,@UserID=285
-        ,@RoleID=346314
-        ,@ParentProcessInstanceID=0;
-    IF @@TRANCOUNT > 0 ROLLBACK TRAN;
-    INSERT INTO #TestResults (TestCase, Title, Expectation, Outcome, DurationMs, MaxDurationMs, ErrorNumber, ErrorMessage)
-    VALUES ('TC068', 'ProcessDateFilterAppliesTo = NULL with date range', 'SUCCESS', 'SUCCESS', DATEDIFF(ms, @t0, SYSDATETIME()), NULL, NULL, NULL);
-END TRY
-BEGIN CATCH
-    IF @@TRANCOUNT > 0 ROLLBACK TRAN;
-    INSERT INTO #TestResults (TestCase, Title, Expectation, Outcome, DurationMs, MaxDurationMs, ErrorNumber, ErrorMessage)
-    VALUES ('TC068', 'ProcessDateFilterAppliesTo = NULL with date range', 'SUCCESS', 'ERROR', DATEDIFF(ms, @t0, SYSDATETIME()), NULL, ERROR_NUMBER(), ERROR_MESSAGE());
-END CATCH
-GO
--- ==========================================================================
--- TC069 | DateRange | ProcessDateFilterAppliesTo = 99 (invalid)
--- Expected: Either a handled validation error or zero rows / no date filter. Must not be an unhandled crash.
--- ==========================================================================
-PRINT '>> TC069 - ProcessDateFilterAppliesTo = 99 (invalid)';
-SELECT 'TC069' AS TestCase, 'ProcessDateFilterAppliesTo = 99 (invalid)' AS Title;
-DECLARE @t0 datetime2 = SYSDATETIME();
-BEGIN TRY
-    DECLARE @p2 Tag.TagModelTVP;
-    INSERT INTO @p2 VALUES (6737,N'BSP',0,366713,NULL,28,366713,5031,410129,0,NULL,'0001-01-01 00:00:00');
-    DECLARE @p9 WorkFlow.ProcessActivityFilterValueTVP;
-    DECLARE @p10 WorkFlow.ProcessActivityFilterValueTVP;
-    DECLARE @p13 WorkFlow.ProcessActivityFilterValueTVP;
-    DECLARE @p14 WorkFlow.ProcessActivityFilterValueTVP;
-    SET @t0 = SYSDATETIME();
-    BEGIN TRAN;
-    EXEC [WorkFlow].[uspGetProcessActivities]
-         @EndDate='$(EndDate)'
-        ,@FilterTags=@p2
-        ,@IsMobileEnabled=NULL
-        ,@IsOpenActivity=1
-        ,@IsChildElementTasks=0
-        ,@ProcessTitle=1
-        ,@IsPersistentDataRequired=NULL
-        ,@ProcessDateFilterAppliesTo=99
-        ,@ProcessStatus=@p9
-        ,@ProcessPriorities=@p10
-        ,@IsReferenceElementTasks=0
-        ,@StartDate='$(StartDate)'
-        ,@ProcessTypes=@p13
-        ,@ProcessTriggers=@p14
-        ,@UserID=285
-        ,@RoleID=346314
-        ,@ParentProcessInstanceID=0;
-    IF @@TRANCOUNT > 0 ROLLBACK TRAN;
-    INSERT INTO #TestResults (TestCase, Title, Expectation, Outcome, DurationMs, MaxDurationMs, ErrorNumber, ErrorMessage)
-    VALUES ('TC069', 'ProcessDateFilterAppliesTo = 99 (invalid)', 'ANY', 'SUCCESS', DATEDIFF(ms, @t0, SYSDATETIME()), NULL, NULL, NULL);
-END TRY
-BEGIN CATCH
-    IF @@TRANCOUNT > 0 ROLLBACK TRAN;
-    INSERT INTO #TestResults (TestCase, Title, Expectation, Outcome, DurationMs, MaxDurationMs, ErrorNumber, ErrorMessage)
-    VALUES ('TC069', 'ProcessDateFilterAppliesTo = 99 (invalid)', 'ANY', 'ERROR', DATEDIFF(ms, @t0, SYSDATETIME()), NULL, ERROR_NUMBER(), ERROR_MESSAGE());
-END CATCH
-GO
--- ==========================================================================
--- TC070 | ProcessStatus | @ProcessStatus with one valid value
--- Expected: Only activities whose process status = $(StatusValue). Subset of TC001.
--- ==========================================================================
-PRINT '>> TC070 - @ProcessStatus with one valid value';
-SELECT 'TC070' AS TestCase, '@ProcessStatus with one valid value' AS Title;
-DECLARE @t0 datetime2 = SYSDATETIME();
-BEGIN TRY
-    DECLARE @p2 Tag.TagModelTVP;
-    INSERT INTO @p2 VALUES (6737,N'BSP',0,366713,NULL,28,366713,5031,410129,0,NULL,'0001-01-01 00:00:00');
-    DECLARE @p9 WorkFlow.ProcessActivityFilterValueTVP;
-    INSERT INTO @p9 VALUES ($(StatusValue));
-    DECLARE @p10 WorkFlow.ProcessActivityFilterValueTVP;
-    DECLARE @p13 WorkFlow.ProcessActivityFilterValueTVP;
-    DECLARE @p14 WorkFlow.ProcessActivityFilterValueTVP;
-    SET @t0 = SYSDATETIME();
-    BEGIN TRAN;
     EXEC [WorkFlow].[uspGetProcessActivities]
          @EndDate=NULL
         ,@FilterTags=@p2
@@ -1314,34 +352,38 @@ BEGIN TRY
         ,@UserID=285
         ,@RoleID=346314
         ,@ParentProcessInstanceID=0;
+    DECLARE @ms int = DATEDIFF(ms, @t0, SYSDATETIME());
     IF @@TRANCOUNT > 0 ROLLBACK TRAN;
     INSERT INTO #TestResults (TestCase, Title, Expectation, Outcome, DurationMs, MaxDurationMs, ErrorNumber, ErrorMessage)
-    VALUES ('TC070', '@ProcessStatus with one valid value', 'SUCCESS', 'SUCCESS', DATEDIFF(ms, @t0, SYSDATETIME()), NULL, NULL, NULL);
+    VALUES ('TC010', 'Empty @FilterTags', 'SUCCESS', 'SUCCESS', @ms, NULL, NULL, NULL);
 END TRY
 BEGIN CATCH
     IF @@TRANCOUNT > 0 ROLLBACK TRAN;
     INSERT INTO #TestResults (TestCase, Title, Expectation, Outcome, DurationMs, MaxDurationMs, ErrorNumber, ErrorMessage)
-    VALUES ('TC070', '@ProcessStatus with one valid value', 'SUCCESS', 'ERROR', DATEDIFF(ms, @t0, SYSDATETIME()), NULL, ERROR_NUMBER(), ERROR_MESSAGE());
+    VALUES ('TC010', 'Empty @FilterTags', 'SUCCESS', 'ERROR', DATEDIFF(ms, @t0, SYSDATETIME()), NULL, ERROR_NUMBER(), ERROR_MESSAGE());
 END CATCH
 GO
 -- ==========================================================================
--- TC071 | ProcessStatus | @ProcessStatus with two values
--- Expected: Activities with status $(StatusValue) OR $(AltStatusValue). Rows >= TC070.
+-- TC011 | FilterTags | Two element tags (BSP + $(AltTagName))
+-- Expected: Rows for either tag. Row count >= TC001. No duplicate processes (one activity per process).
 -- ==========================================================================
-PRINT '>> TC071 - @ProcessStatus with two values';
-SELECT 'TC071' AS TestCase, '@ProcessStatus with two values' AS Title;
+PRINT '>> TC011 - Two element tags (BSP + $(AltTagName))';
+SELECT 'TC011' AS TestCase, 'Two element tags (BSP + $(AltTagName))' AS Title;
 DECLARE @t0 datetime2 = SYSDATETIME();
 BEGIN TRY
     DECLARE @p2 Tag.TagModelTVP;
+    DECLARE @tag Tag.TagModelTVP;
     INSERT INTO @p2 VALUES (6737,N'BSP',0,366713,NULL,28,366713,5031,410129,0,NULL,'0001-01-01 00:00:00');
+    DELETE FROM @tag;
+    INSERT INTO @tag VALUES (6737,N'BSP',0,366713,NULL,28,366713,5031,410129,0,NULL,'0001-01-01 00:00:00');
+    UPDATE @tag SET TagName = N'$(AltTagName)', ObjectID = $(AltTagObjectID);
+    INSERT INTO @p2 SELECT * FROM @tag;
     DECLARE @p9 WorkFlow.ProcessActivityFilterValueTVP;
-    INSERT INTO @p9 VALUES ($(StatusValue));
-    INSERT INTO @p9 VALUES ($(AltStatusValue));
     DECLARE @p10 WorkFlow.ProcessActivityFilterValueTVP;
     DECLARE @p13 WorkFlow.ProcessActivityFilterValueTVP;
     DECLARE @p14 WorkFlow.ProcessActivityFilterValueTVP;
-    SET @t0 = SYSDATETIME();
     BEGIN TRAN;
+    SET @t0 = SYSDATETIME();
     EXEC [WorkFlow].[uspGetProcessActivities]
          @EndDate=NULL
         ,@FilterTags=@p2
@@ -1360,33 +402,37 @@ BEGIN TRY
         ,@UserID=285
         ,@RoleID=346314
         ,@ParentProcessInstanceID=0;
+    DECLARE @ms int = DATEDIFF(ms, @t0, SYSDATETIME());
     IF @@TRANCOUNT > 0 ROLLBACK TRAN;
     INSERT INTO #TestResults (TestCase, Title, Expectation, Outcome, DurationMs, MaxDurationMs, ErrorNumber, ErrorMessage)
-    VALUES ('TC071', '@ProcessStatus with two values', 'SUCCESS', 'SUCCESS', DATEDIFF(ms, @t0, SYSDATETIME()), NULL, NULL, NULL);
+    VALUES ('TC011', 'Two element tags (BSP + $(AltTagName))', 'SUCCESS', 'SUCCESS', @ms, NULL, NULL, NULL);
 END TRY
 BEGIN CATCH
     IF @@TRANCOUNT > 0 ROLLBACK TRAN;
     INSERT INTO #TestResults (TestCase, Title, Expectation, Outcome, DurationMs, MaxDurationMs, ErrorNumber, ErrorMessage)
-    VALUES ('TC071', '@ProcessStatus with two values', 'SUCCESS', 'ERROR', DATEDIFF(ms, @t0, SYSDATETIME()), NULL, ERROR_NUMBER(), ERROR_MESSAGE());
+    VALUES ('TC011', 'Two element tags (BSP + $(AltTagName))', 'SUCCESS', 'ERROR', DATEDIFF(ms, @t0, SYSDATETIME()), NULL, ERROR_NUMBER(), ERROR_MESSAGE());
 END CATCH
 GO
 -- ==========================================================================
--- TC072 | ProcessStatus | @ProcessStatus with non-existent value (-1)
--- Expected: No error, zero rows.
+-- TC012 | FilterTags | Non-existent tag
+-- Expected: No error. Not necessarily zero rows: tag-based activities disappear, but activities executed directly by user 285 are still returned (same as TC010).
 -- ==========================================================================
-PRINT '>> TC072 - @ProcessStatus with non-existent value (-1)';
-SELECT 'TC072' AS TestCase, '@ProcessStatus with non-existent value (-1)' AS Title;
+PRINT '>> TC012 - Non-existent tag';
+SELECT 'TC012' AS TestCase, 'Non-existent tag' AS Title;
 DECLARE @t0 datetime2 = SYSDATETIME();
 BEGIN TRY
     DECLARE @p2 Tag.TagModelTVP;
-    INSERT INTO @p2 VALUES (6737,N'BSP',0,366713,NULL,28,366713,5031,410129,0,NULL,'0001-01-01 00:00:00');
+    DECLARE @tag Tag.TagModelTVP;
+    DELETE FROM @tag;
+    INSERT INTO @tag VALUES (6737,N'BSP',0,366713,NULL,28,366713,5031,410129,0,NULL,'0001-01-01 00:00:00');
+    UPDATE @tag SET TagName = N'__NO_SUCH_TAG__', ObjectID = -1;
+    INSERT INTO @p2 SELECT * FROM @tag;
     DECLARE @p9 WorkFlow.ProcessActivityFilterValueTVP;
-    INSERT INTO @p9 VALUES (-1);
     DECLARE @p10 WorkFlow.ProcessActivityFilterValueTVP;
     DECLARE @p13 WorkFlow.ProcessActivityFilterValueTVP;
     DECLARE @p14 WorkFlow.ProcessActivityFilterValueTVP;
-    SET @t0 = SYSDATETIME();
     BEGIN TRAN;
+    SET @t0 = SYSDATETIME();
     EXEC [WorkFlow].[uspGetProcessActivities]
          @EndDate=NULL
         ,@FilterTags=@p2
@@ -1405,33 +451,34 @@ BEGIN TRY
         ,@UserID=285
         ,@RoleID=346314
         ,@ParentProcessInstanceID=0;
+    DECLARE @ms int = DATEDIFF(ms, @t0, SYSDATETIME());
     IF @@TRANCOUNT > 0 ROLLBACK TRAN;
     INSERT INTO #TestResults (TestCase, Title, Expectation, Outcome, DurationMs, MaxDurationMs, ErrorNumber, ErrorMessage)
-    VALUES ('TC072', '@ProcessStatus with non-existent value (-1)', 'SUCCESS', 'SUCCESS', DATEDIFF(ms, @t0, SYSDATETIME()), NULL, NULL, NULL);
+    VALUES ('TC012', 'Non-existent tag', 'SUCCESS', 'SUCCESS', @ms, NULL, NULL, NULL);
 END TRY
 BEGIN CATCH
     IF @@TRANCOUNT > 0 ROLLBACK TRAN;
     INSERT INTO #TestResults (TestCase, Title, Expectation, Outcome, DurationMs, MaxDurationMs, ErrorNumber, ErrorMessage)
-    VALUES ('TC072', '@ProcessStatus with non-existent value (-1)', 'SUCCESS', 'ERROR', DATEDIFF(ms, @t0, SYSDATETIME()), NULL, ERROR_NUMBER(), ERROR_MESSAGE());
+    VALUES ('TC012', 'Non-existent tag', 'SUCCESS', 'ERROR', DATEDIFF(ms, @t0, SYSDATETIME()), NULL, ERROR_NUMBER(), ERROR_MESSAGE());
 END CATCH
 GO
 -- ==========================================================================
--- TC075 | ProcessPriorities | @ProcessPriorities with one valid value
--- Expected: Only activities whose process priority = $(PriorityValue). Subset of TC001.
+-- TC013 | FilterTags | Same tag supplied twice
+-- Expected: Identical result sets to TC001 (reference elements are DISTINCT). If the TVP has a primary key, the duplicate INSERT fails; that is also acceptable.
 -- ==========================================================================
-PRINT '>> TC075 - @ProcessPriorities with one valid value';
-SELECT 'TC075' AS TestCase, '@ProcessPriorities with one valid value' AS Title;
+PRINT '>> TC013 - Same tag supplied twice';
+SELECT 'TC013' AS TestCase, 'Same tag supplied twice' AS Title;
 DECLARE @t0 datetime2 = SYSDATETIME();
 BEGIN TRY
     DECLARE @p2 Tag.TagModelTVP;
     INSERT INTO @p2 VALUES (6737,N'BSP',0,366713,NULL,28,366713,5031,410129,0,NULL,'0001-01-01 00:00:00');
+    INSERT INTO @p2 VALUES (6737,N'BSP',0,366713,NULL,28,366713,5031,410129,0,NULL,'0001-01-01 00:00:00');
     DECLARE @p9 WorkFlow.ProcessActivityFilterValueTVP;
     DECLARE @p10 WorkFlow.ProcessActivityFilterValueTVP;
-    INSERT INTO @p10 VALUES ($(PriorityValue));
     DECLARE @p13 WorkFlow.ProcessActivityFilterValueTVP;
     DECLARE @p14 WorkFlow.ProcessActivityFilterValueTVP;
-    SET @t0 = SYSDATETIME();
     BEGIN TRAN;
+    SET @t0 = SYSDATETIME();
     EXEC [WorkFlow].[uspGetProcessActivities]
          @EndDate=NULL
         ,@FilterTags=@p2
@@ -1450,34 +497,38 @@ BEGIN TRY
         ,@UserID=285
         ,@RoleID=346314
         ,@ParentProcessInstanceID=0;
+    DECLARE @ms int = DATEDIFF(ms, @t0, SYSDATETIME());
     IF @@TRANCOUNT > 0 ROLLBACK TRAN;
     INSERT INTO #TestResults (TestCase, Title, Expectation, Outcome, DurationMs, MaxDurationMs, ErrorNumber, ErrorMessage)
-    VALUES ('TC075', '@ProcessPriorities with one valid value', 'SUCCESS', 'SUCCESS', DATEDIFF(ms, @t0, SYSDATETIME()), NULL, NULL, NULL);
+    VALUES ('TC013', 'Same tag supplied twice', 'ANY', 'SUCCESS', @ms, NULL, NULL, NULL);
 END TRY
 BEGIN CATCH
     IF @@TRANCOUNT > 0 ROLLBACK TRAN;
     INSERT INTO #TestResults (TestCase, Title, Expectation, Outcome, DurationMs, MaxDurationMs, ErrorNumber, ErrorMessage)
-    VALUES ('TC075', '@ProcessPriorities with one valid value', 'SUCCESS', 'ERROR', DATEDIFF(ms, @t0, SYSDATETIME()), NULL, ERROR_NUMBER(), ERROR_MESSAGE());
+    VALUES ('TC013', 'Same tag supplied twice', 'ANY', 'ERROR', DATEDIFF(ms, @t0, SYSDATETIME()), NULL, ERROR_NUMBER(), ERROR_MESSAGE());
 END CATCH
 GO
 -- ==========================================================================
--- TC076 | ProcessPriorities | @ProcessPriorities with two values
--- Expected: Activities with priority $(PriorityValue) OR $(AltPriorityValue). Rows >= TC075.
+-- TC014 | FilterTags | BSP tag + process-design tag (ElementTypeID 2008)
+-- Expected: Subset of TC001: only processes with ProcessName = '$(ProcessName)', plus processes whose ProcessName is NULL.
 -- ==========================================================================
-PRINT '>> TC076 - @ProcessPriorities with two values';
-SELECT 'TC076' AS TestCase, '@ProcessPriorities with two values' AS Title;
+PRINT '>> TC014 - BSP tag + process-design tag (ElementTypeID 2008)';
+SELECT 'TC014' AS TestCase, 'BSP tag + process-design tag (ElementTypeID 2008)' AS Title;
 DECLARE @t0 datetime2 = SYSDATETIME();
 BEGIN TRY
     DECLARE @p2 Tag.TagModelTVP;
+    DECLARE @tag Tag.TagModelTVP;
     INSERT INTO @p2 VALUES (6737,N'BSP',0,366713,NULL,28,366713,5031,410129,0,NULL,'0001-01-01 00:00:00');
+    DELETE FROM @tag;
+    INSERT INTO @tag VALUES (6737,N'BSP',0,366713,NULL,28,366713,5031,410129,0,NULL,'0001-01-01 00:00:00');
+    UPDATE @tag SET TagName = N'$(ProcessName)', ElementTypeID = 2008;
+    INSERT INTO @p2 SELECT * FROM @tag;
     DECLARE @p9 WorkFlow.ProcessActivityFilterValueTVP;
     DECLARE @p10 WorkFlow.ProcessActivityFilterValueTVP;
-    INSERT INTO @p10 VALUES ($(PriorityValue));
-    INSERT INTO @p10 VALUES ($(AltPriorityValue));
     DECLARE @p13 WorkFlow.ProcessActivityFilterValueTVP;
     DECLARE @p14 WorkFlow.ProcessActivityFilterValueTVP;
-    SET @t0 = SYSDATETIME();
     BEGIN TRAN;
+    SET @t0 = SYSDATETIME();
     EXEC [WorkFlow].[uspGetProcessActivities]
          @EndDate=NULL
         ,@FilterTags=@p2
@@ -1496,33 +547,37 @@ BEGIN TRY
         ,@UserID=285
         ,@RoleID=346314
         ,@ParentProcessInstanceID=0;
+    DECLARE @ms int = DATEDIFF(ms, @t0, SYSDATETIME());
     IF @@TRANCOUNT > 0 ROLLBACK TRAN;
     INSERT INTO #TestResults (TestCase, Title, Expectation, Outcome, DurationMs, MaxDurationMs, ErrorNumber, ErrorMessage)
-    VALUES ('TC076', '@ProcessPriorities with two values', 'SUCCESS', 'SUCCESS', DATEDIFF(ms, @t0, SYSDATETIME()), NULL, NULL, NULL);
+    VALUES ('TC014', 'BSP tag + process-design tag (ElementTypeID 2008)', 'SUCCESS', 'SUCCESS', @ms, NULL, NULL, NULL);
 END TRY
 BEGIN CATCH
     IF @@TRANCOUNT > 0 ROLLBACK TRAN;
     INSERT INTO #TestResults (TestCase, Title, Expectation, Outcome, DurationMs, MaxDurationMs, ErrorNumber, ErrorMessage)
-    VALUES ('TC076', '@ProcessPriorities with two values', 'SUCCESS', 'ERROR', DATEDIFF(ms, @t0, SYSDATETIME()), NULL, ERROR_NUMBER(), ERROR_MESSAGE());
+    VALUES ('TC014', 'BSP tag + process-design tag (ElementTypeID 2008)', 'SUCCESS', 'ERROR', DATEDIFF(ms, @t0, SYSDATETIME()), NULL, ERROR_NUMBER(), ERROR_MESSAGE());
 END CATCH
 GO
 -- ==========================================================================
--- TC077 | ProcessPriorities | @ProcessPriorities with non-existent value (-1)
--- Expected: No error, zero rows.
+-- TC015 | FilterTags | Process-design tag only
+-- Expected: No element tags, so like TC010 (only activities executed by user 285), then filtered to ProcessName = '$(ProcessName)'.
 -- ==========================================================================
-PRINT '>> TC077 - @ProcessPriorities with non-existent value (-1)';
-SELECT 'TC077' AS TestCase, '@ProcessPriorities with non-existent value (-1)' AS Title;
+PRINT '>> TC015 - Process-design tag only';
+SELECT 'TC015' AS TestCase, 'Process-design tag only' AS Title;
 DECLARE @t0 datetime2 = SYSDATETIME();
 BEGIN TRY
     DECLARE @p2 Tag.TagModelTVP;
-    INSERT INTO @p2 VALUES (6737,N'BSP',0,366713,NULL,28,366713,5031,410129,0,NULL,'0001-01-01 00:00:00');
+    DECLARE @tag Tag.TagModelTVP;
+    DELETE FROM @tag;
+    INSERT INTO @tag VALUES (6737,N'BSP',0,366713,NULL,28,366713,5031,410129,0,NULL,'0001-01-01 00:00:00');
+    UPDATE @tag SET TagName = N'$(ProcessName)', ElementTypeID = 2008;
+    INSERT INTO @p2 SELECT * FROM @tag;
     DECLARE @p9 WorkFlow.ProcessActivityFilterValueTVP;
     DECLARE @p10 WorkFlow.ProcessActivityFilterValueTVP;
-    INSERT INTO @p10 VALUES (-1);
     DECLARE @p13 WorkFlow.ProcessActivityFilterValueTVP;
     DECLARE @p14 WorkFlow.ProcessActivityFilterValueTVP;
-    SET @t0 = SYSDATETIME();
     BEGIN TRAN;
+    SET @t0 = SYSDATETIME();
     EXEC [WorkFlow].[uspGetProcessActivities]
          @EndDate=NULL
         ,@FilterTags=@p2
@@ -1541,22 +596,23 @@ BEGIN TRY
         ,@UserID=285
         ,@RoleID=346314
         ,@ParentProcessInstanceID=0;
+    DECLARE @ms int = DATEDIFF(ms, @t0, SYSDATETIME());
     IF @@TRANCOUNT > 0 ROLLBACK TRAN;
     INSERT INTO #TestResults (TestCase, Title, Expectation, Outcome, DurationMs, MaxDurationMs, ErrorNumber, ErrorMessage)
-    VALUES ('TC077', '@ProcessPriorities with non-existent value (-1)', 'SUCCESS', 'SUCCESS', DATEDIFF(ms, @t0, SYSDATETIME()), NULL, NULL, NULL);
+    VALUES ('TC015', 'Process-design tag only', 'SUCCESS', 'SUCCESS', @ms, NULL, NULL, NULL);
 END TRY
 BEGIN CATCH
     IF @@TRANCOUNT > 0 ROLLBACK TRAN;
     INSERT INTO #TestResults (TestCase, Title, Expectation, Outcome, DurationMs, MaxDurationMs, ErrorNumber, ErrorMessage)
-    VALUES ('TC077', '@ProcessPriorities with non-existent value (-1)', 'SUCCESS', 'ERROR', DATEDIFF(ms, @t0, SYSDATETIME()), NULL, ERROR_NUMBER(), ERROR_MESSAGE());
+    VALUES ('TC015', 'Process-design tag only', 'SUCCESS', 'ERROR', DATEDIFF(ms, @t0, SYSDATETIME()), NULL, ERROR_NUMBER(), ERROR_MESSAGE());
 END CATCH
 GO
 -- ==========================================================================
--- TC080 | ProcessTypes | @ProcessTypes with one valid value
--- Expected: Only activities whose process type = $(TypeValue). Subset of TC001.
+-- TC020 | IsOpenActivity | IsOpenActivity = 0
+-- Expected: Only closed processes (PID.IsActive = 0) with their latest closed activity. No overlap with TC001's processes.
 -- ==========================================================================
-PRINT '>> TC080 - @ProcessTypes with one valid value';
-SELECT 'TC080' AS TestCase, '@ProcessTypes with one valid value' AS Title;
+PRINT '>> TC020 - IsOpenActivity = 0';
+SELECT 'TC020' AS TestCase, 'IsOpenActivity = 0' AS Title;
 DECLARE @t0 datetime2 = SYSDATETIME();
 BEGIN TRY
     DECLARE @p2 Tag.TagModelTVP;
@@ -1564,15 +620,14 @@ BEGIN TRY
     DECLARE @p9 WorkFlow.ProcessActivityFilterValueTVP;
     DECLARE @p10 WorkFlow.ProcessActivityFilterValueTVP;
     DECLARE @p13 WorkFlow.ProcessActivityFilterValueTVP;
-    INSERT INTO @p13 VALUES ($(TypeValue));
     DECLARE @p14 WorkFlow.ProcessActivityFilterValueTVP;
-    SET @t0 = SYSDATETIME();
     BEGIN TRAN;
+    SET @t0 = SYSDATETIME();
     EXEC [WorkFlow].[uspGetProcessActivities]
          @EndDate=NULL
         ,@FilterTags=@p2
         ,@IsMobileEnabled=NULL
-        ,@IsOpenActivity=1
+        ,@IsOpenActivity=0
         ,@IsChildElementTasks=0
         ,@ProcessTitle=1
         ,@IsPersistentDataRequired=NULL
@@ -1586,22 +641,23 @@ BEGIN TRY
         ,@UserID=285
         ,@RoleID=346314
         ,@ParentProcessInstanceID=0;
+    DECLARE @ms int = DATEDIFF(ms, @t0, SYSDATETIME());
     IF @@TRANCOUNT > 0 ROLLBACK TRAN;
     INSERT INTO #TestResults (TestCase, Title, Expectation, Outcome, DurationMs, MaxDurationMs, ErrorNumber, ErrorMessage)
-    VALUES ('TC080', '@ProcessTypes with one valid value', 'SUCCESS', 'SUCCESS', DATEDIFF(ms, @t0, SYSDATETIME()), NULL, NULL, NULL);
+    VALUES ('TC020', 'IsOpenActivity = 0', 'SUCCESS', 'SUCCESS', @ms, NULL, NULL, NULL);
 END TRY
 BEGIN CATCH
     IF @@TRANCOUNT > 0 ROLLBACK TRAN;
     INSERT INTO #TestResults (TestCase, Title, Expectation, Outcome, DurationMs, MaxDurationMs, ErrorNumber, ErrorMessage)
-    VALUES ('TC080', '@ProcessTypes with one valid value', 'SUCCESS', 'ERROR', DATEDIFF(ms, @t0, SYSDATETIME()), NULL, ERROR_NUMBER(), ERROR_MESSAGE());
+    VALUES ('TC020', 'IsOpenActivity = 0', 'SUCCESS', 'ERROR', DATEDIFF(ms, @t0, SYSDATETIME()), NULL, ERROR_NUMBER(), ERROR_MESSAGE());
 END CATCH
 GO
 -- ==========================================================================
--- TC081 | ProcessTypes | @ProcessTypes with two values
--- Expected: Activities with type $(TypeValue) OR $(AltTypeValue). Rows >= TC080.
+-- TC021 | IsOpenActivity | IsOpenActivity = NULL
+-- Expected: Open and closed processes. Process count >= TC001 and >= TC020.
 -- ==========================================================================
-PRINT '>> TC081 - @ProcessTypes with two values';
-SELECT 'TC081' AS TestCase, '@ProcessTypes with two values' AS Title;
+PRINT '>> TC021 - IsOpenActivity = NULL';
+SELECT 'TC021' AS TestCase, 'IsOpenActivity = NULL' AS Title;
 DECLARE @t0 datetime2 = SYSDATETIME();
 BEGIN TRY
     DECLARE @p2 Tag.TagModelTVP;
@@ -1609,16 +665,14 @@ BEGIN TRY
     DECLARE @p9 WorkFlow.ProcessActivityFilterValueTVP;
     DECLARE @p10 WorkFlow.ProcessActivityFilterValueTVP;
     DECLARE @p13 WorkFlow.ProcessActivityFilterValueTVP;
-    INSERT INTO @p13 VALUES ($(TypeValue));
-    INSERT INTO @p13 VALUES ($(AltTypeValue));
     DECLARE @p14 WorkFlow.ProcessActivityFilterValueTVP;
-    SET @t0 = SYSDATETIME();
     BEGIN TRAN;
+    SET @t0 = SYSDATETIME();
     EXEC [WorkFlow].[uspGetProcessActivities]
          @EndDate=NULL
         ,@FilterTags=@p2
         ,@IsMobileEnabled=NULL
-        ,@IsOpenActivity=1
+        ,@IsOpenActivity=NULL
         ,@IsChildElementTasks=0
         ,@ProcessTitle=1
         ,@IsPersistentDataRequired=NULL
@@ -1632,22 +686,23 @@ BEGIN TRY
         ,@UserID=285
         ,@RoleID=346314
         ,@ParentProcessInstanceID=0;
+    DECLARE @ms int = DATEDIFF(ms, @t0, SYSDATETIME());
     IF @@TRANCOUNT > 0 ROLLBACK TRAN;
     INSERT INTO #TestResults (TestCase, Title, Expectation, Outcome, DurationMs, MaxDurationMs, ErrorNumber, ErrorMessage)
-    VALUES ('TC081', '@ProcessTypes with two values', 'SUCCESS', 'SUCCESS', DATEDIFF(ms, @t0, SYSDATETIME()), NULL, NULL, NULL);
+    VALUES ('TC021', 'IsOpenActivity = NULL', 'SUCCESS', 'SUCCESS', @ms, NULL, NULL, NULL);
 END TRY
 BEGIN CATCH
     IF @@TRANCOUNT > 0 ROLLBACK TRAN;
     INSERT INTO #TestResults (TestCase, Title, Expectation, Outcome, DurationMs, MaxDurationMs, ErrorNumber, ErrorMessage)
-    VALUES ('TC081', '@ProcessTypes with two values', 'SUCCESS', 'ERROR', DATEDIFF(ms, @t0, SYSDATETIME()), NULL, ERROR_NUMBER(), ERROR_MESSAGE());
+    VALUES ('TC021', 'IsOpenActivity = NULL', 'SUCCESS', 'ERROR', DATEDIFF(ms, @t0, SYSDATETIME()), NULL, ERROR_NUMBER(), ERROR_MESSAGE());
 END CATCH
 GO
 -- ==========================================================================
--- TC082 | ProcessTypes | @ProcessTypes with non-existent value (-1)
--- Expected: No error, zero rows.
+-- TC030 | ReferenceElementTasks | IsReferenceElementTasks = 1 (element tag only)
+-- Expected: Reference-element path: the latest activity of each process whose activity RefElementVersionID = ObjectID of the BSP tag. Respects IsOpenActivity and the date filter. Does not check the user or role (see TC034).
 -- ==========================================================================
-PRINT '>> TC082 - @ProcessTypes with non-existent value (-1)';
-SELECT 'TC082' AS TestCase, '@ProcessTypes with non-existent value (-1)' AS Title;
+PRINT '>> TC030 - IsReferenceElementTasks = 1 (element tag only)';
+SELECT 'TC030' AS TestCase, 'IsReferenceElementTasks = 1 (element tag only)' AS Title;
 DECLARE @t0 datetime2 = SYSDATETIME();
 BEGIN TRY
     DECLARE @p2 Tag.TagModelTVP;
@@ -1655,10 +710,9 @@ BEGIN TRY
     DECLARE @p9 WorkFlow.ProcessActivityFilterValueTVP;
     DECLARE @p10 WorkFlow.ProcessActivityFilterValueTVP;
     DECLARE @p13 WorkFlow.ProcessActivityFilterValueTVP;
-    INSERT INTO @p13 VALUES (-1);
     DECLARE @p14 WorkFlow.ProcessActivityFilterValueTVP;
-    SET @t0 = SYSDATETIME();
     BEGIN TRAN;
+    SET @t0 = SYSDATETIME();
     EXEC [WorkFlow].[uspGetProcessActivities]
          @EndDate=NULL
         ,@FilterTags=@p2
@@ -1670,40 +724,45 @@ BEGIN TRY
         ,@ProcessDateFilterAppliesTo=1
         ,@ProcessStatus=@p9
         ,@ProcessPriorities=@p10
-        ,@IsReferenceElementTasks=0
+        ,@IsReferenceElementTasks=1
         ,@StartDate=NULL
         ,@ProcessTypes=@p13
         ,@ProcessTriggers=@p14
         ,@UserID=285
         ,@RoleID=346314
         ,@ParentProcessInstanceID=0;
+    DECLARE @ms int = DATEDIFF(ms, @t0, SYSDATETIME());
     IF @@TRANCOUNT > 0 ROLLBACK TRAN;
     INSERT INTO #TestResults (TestCase, Title, Expectation, Outcome, DurationMs, MaxDurationMs, ErrorNumber, ErrorMessage)
-    VALUES ('TC082', '@ProcessTypes with non-existent value (-1)', 'SUCCESS', 'SUCCESS', DATEDIFF(ms, @t0, SYSDATETIME()), NULL, NULL, NULL);
+    VALUES ('TC030', 'IsReferenceElementTasks = 1 (element tag only)', 'SUCCESS', 'SUCCESS', @ms, NULL, NULL, NULL);
 END TRY
 BEGIN CATCH
     IF @@TRANCOUNT > 0 ROLLBACK TRAN;
     INSERT INTO #TestResults (TestCase, Title, Expectation, Outcome, DurationMs, MaxDurationMs, ErrorNumber, ErrorMessage)
-    VALUES ('TC082', '@ProcessTypes with non-existent value (-1)', 'SUCCESS', 'ERROR', DATEDIFF(ms, @t0, SYSDATETIME()), NULL, ERROR_NUMBER(), ERROR_MESSAGE());
+    VALUES ('TC030', 'IsReferenceElementTasks = 1 (element tag only)', 'SUCCESS', 'ERROR', DATEDIFF(ms, @t0, SYSDATETIME()), NULL, ERROR_NUMBER(), ERROR_MESSAGE());
 END CATCH
 GO
 -- ==========================================================================
--- TC085 | ProcessTriggers | @ProcessTriggers with one valid value
--- Expected: Only activities whose process trigger = $(TriggerValue). Subset of TC001.
+-- TC031 | ReferenceElementTasks | IsReferenceElementTasks = 1 + one process-design tag + one element tag
+-- Expected: Activities of processes named '$(ProcessName)' on elements tagged against the BSP tag's ObjectID (via Tag.TagMap).
 -- ==========================================================================
-PRINT '>> TC085 - @ProcessTriggers with one valid value';
-SELECT 'TC085' AS TestCase, '@ProcessTriggers with one valid value' AS Title;
+PRINT '>> TC031 - IsReferenceElementTasks = 1 + one process-design tag + one element tag';
+SELECT 'TC031' AS TestCase, 'IsReferenceElementTasks = 1 + one process-design tag + one element tag' AS Title;
 DECLARE @t0 datetime2 = SYSDATETIME();
 BEGIN TRY
     DECLARE @p2 Tag.TagModelTVP;
+    DECLARE @tag Tag.TagModelTVP;
     INSERT INTO @p2 VALUES (6737,N'BSP',0,366713,NULL,28,366713,5031,410129,0,NULL,'0001-01-01 00:00:00');
+    DELETE FROM @tag;
+    INSERT INTO @tag VALUES (6737,N'BSP',0,366713,NULL,28,366713,5031,410129,0,NULL,'0001-01-01 00:00:00');
+    UPDATE @tag SET TagName = N'$(ProcessName)', ElementTypeID = 2008;
+    INSERT INTO @p2 SELECT * FROM @tag;
     DECLARE @p9 WorkFlow.ProcessActivityFilterValueTVP;
     DECLARE @p10 WorkFlow.ProcessActivityFilterValueTVP;
     DECLARE @p13 WorkFlow.ProcessActivityFilterValueTVP;
     DECLARE @p14 WorkFlow.ProcessActivityFilterValueTVP;
-    INSERT INTO @p14 VALUES ($(TriggerValue));
-    SET @t0 = SYSDATETIME();
     BEGIN TRAN;
+    SET @t0 = SYSDATETIME();
     EXEC [WorkFlow].[uspGetProcessActivities]
          @EndDate=NULL
         ,@FilterTags=@p2
@@ -1715,41 +774,50 @@ BEGIN TRY
         ,@ProcessDateFilterAppliesTo=1
         ,@ProcessStatus=@p9
         ,@ProcessPriorities=@p10
-        ,@IsReferenceElementTasks=0
+        ,@IsReferenceElementTasks=1
         ,@StartDate=NULL
         ,@ProcessTypes=@p13
         ,@ProcessTriggers=@p14
         ,@UserID=285
         ,@RoleID=346314
         ,@ParentProcessInstanceID=0;
+    DECLARE @ms int = DATEDIFF(ms, @t0, SYSDATETIME());
     IF @@TRANCOUNT > 0 ROLLBACK TRAN;
     INSERT INTO #TestResults (TestCase, Title, Expectation, Outcome, DurationMs, MaxDurationMs, ErrorNumber, ErrorMessage)
-    VALUES ('TC085', '@ProcessTriggers with one valid value', 'SUCCESS', 'SUCCESS', DATEDIFF(ms, @t0, SYSDATETIME()), NULL, NULL, NULL);
+    VALUES ('TC031', 'IsReferenceElementTasks = 1 + one process-design tag + one element tag', 'SUCCESS', 'SUCCESS', @ms, NULL, NULL, NULL);
 END TRY
 BEGIN CATCH
     IF @@TRANCOUNT > 0 ROLLBACK TRAN;
     INSERT INTO #TestResults (TestCase, Title, Expectation, Outcome, DurationMs, MaxDurationMs, ErrorNumber, ErrorMessage)
-    VALUES ('TC085', '@ProcessTriggers with one valid value', 'SUCCESS', 'ERROR', DATEDIFF(ms, @t0, SYSDATETIME()), NULL, ERROR_NUMBER(), ERROR_MESSAGE());
+    VALUES ('TC031', 'IsReferenceElementTasks = 1 + one process-design tag + one element tag', 'SUCCESS', 'ERROR', DATEDIFF(ms, @t0, SYSDATETIME()), NULL, ERROR_NUMBER(), ERROR_MESSAGE());
 END CATCH
 GO
 -- ==========================================================================
--- TC086 | ProcessTriggers | @ProcessTriggers with two values
--- Expected: Activities with trigger $(TriggerValue) OR $(AltTriggerValue). Rows >= TC085.
+-- TC032 | ReferenceElementTasks | IsReferenceElementTasks = 1 + process-design tag + TWO element tags
+-- Expected: Fails with error 512 'Subquery returned more than 1 value' from T.SourceObjectID = (SELECT RefElementVersionID FROM @ReferenceElementFilter). It should return activities for both elements.
+-- Suspected defect: Scalar subquery '= (SELECT ... FROM @ReferenceElementFilter)' fails with error 512 when more than one element tag is passed. Use IN or a JOIN.
 -- ==========================================================================
-PRINT '>> TC086 - @ProcessTriggers with two values';
-SELECT 'TC086' AS TestCase, '@ProcessTriggers with two values' AS Title;
+PRINT '>> TC032 - IsReferenceElementTasks = 1 + process-design tag + TWO element tags';
+SELECT 'TC032' AS TestCase, 'IsReferenceElementTasks = 1 + process-design tag + TWO element tags' AS Title;
 DECLARE @t0 datetime2 = SYSDATETIME();
 BEGIN TRY
     DECLARE @p2 Tag.TagModelTVP;
+    DECLARE @tag Tag.TagModelTVP;
     INSERT INTO @p2 VALUES (6737,N'BSP',0,366713,NULL,28,366713,5031,410129,0,NULL,'0001-01-01 00:00:00');
+    DELETE FROM @tag;
+    INSERT INTO @tag VALUES (6737,N'BSP',0,366713,NULL,28,366713,5031,410129,0,NULL,'0001-01-01 00:00:00');
+    UPDATE @tag SET TagName = N'$(AltTagName)', ObjectID = $(AltTagObjectID);
+    INSERT INTO @p2 SELECT * FROM @tag;
+    DELETE FROM @tag;
+    INSERT INTO @tag VALUES (6737,N'BSP',0,366713,NULL,28,366713,5031,410129,0,NULL,'0001-01-01 00:00:00');
+    UPDATE @tag SET TagName = N'$(ProcessName)', ElementTypeID = 2008;
+    INSERT INTO @p2 SELECT * FROM @tag;
     DECLARE @p9 WorkFlow.ProcessActivityFilterValueTVP;
     DECLARE @p10 WorkFlow.ProcessActivityFilterValueTVP;
     DECLARE @p13 WorkFlow.ProcessActivityFilterValueTVP;
     DECLARE @p14 WorkFlow.ProcessActivityFilterValueTVP;
-    INSERT INTO @p14 VALUES ($(TriggerValue));
-    INSERT INTO @p14 VALUES ($(AltTriggerValue));
-    SET @t0 = SYSDATETIME();
     BEGIN TRAN;
+    SET @t0 = SYSDATETIME();
     EXEC [WorkFlow].[uspGetProcessActivities]
          @EndDate=NULL
         ,@FilterTags=@p2
@@ -1761,40 +829,50 @@ BEGIN TRY
         ,@ProcessDateFilterAppliesTo=1
         ,@ProcessStatus=@p9
         ,@ProcessPriorities=@p10
-        ,@IsReferenceElementTasks=0
+        ,@IsReferenceElementTasks=1
         ,@StartDate=NULL
         ,@ProcessTypes=@p13
         ,@ProcessTriggers=@p14
         ,@UserID=285
         ,@RoleID=346314
         ,@ParentProcessInstanceID=0;
+    DECLARE @ms int = DATEDIFF(ms, @t0, SYSDATETIME());
     IF @@TRANCOUNT > 0 ROLLBACK TRAN;
     INSERT INTO #TestResults (TestCase, Title, Expectation, Outcome, DurationMs, MaxDurationMs, ErrorNumber, ErrorMessage)
-    VALUES ('TC086', '@ProcessTriggers with two values', 'SUCCESS', 'SUCCESS', DATEDIFF(ms, @t0, SYSDATETIME()), NULL, NULL, NULL);
+    VALUES ('TC032', 'IsReferenceElementTasks = 1 + process-design tag + TWO element tags', 'DEFECT', 'SUCCESS', @ms, NULL, NULL, NULL);
 END TRY
 BEGIN CATCH
     IF @@TRANCOUNT > 0 ROLLBACK TRAN;
     INSERT INTO #TestResults (TestCase, Title, Expectation, Outcome, DurationMs, MaxDurationMs, ErrorNumber, ErrorMessage)
-    VALUES ('TC086', '@ProcessTriggers with two values', 'SUCCESS', 'ERROR', DATEDIFF(ms, @t0, SYSDATETIME()), NULL, ERROR_NUMBER(), ERROR_MESSAGE());
+    VALUES ('TC032', 'IsReferenceElementTasks = 1 + process-design tag + TWO element tags', 'DEFECT', 'ERROR', DATEDIFF(ms, @t0, SYSDATETIME()), NULL, ERROR_NUMBER(), ERROR_MESSAGE());
 END CATCH
 GO
 -- ==========================================================================
--- TC087 | ProcessTriggers | @ProcessTriggers with non-existent value (-1)
--- Expected: No error, zero rows.
+-- TC033 | ReferenceElementTasks | IsReferenceElementTasks = 1 + TWO process-design tags + element tag
+-- Expected: Fails with error 512 from PID.ProcessName = (SELECT ProcessName FROM @ProcessNameFilter). It should return activities for both process names.
+-- Suspected defect: Scalar subquery '= (SELECT ProcessName FROM @ProcessNameFilter)' fails with error 512 when more than one process-design tag is passed.
 -- ==========================================================================
-PRINT '>> TC087 - @ProcessTriggers with non-existent value (-1)';
-SELECT 'TC087' AS TestCase, '@ProcessTriggers with non-existent value (-1)' AS Title;
+PRINT '>> TC033 - IsReferenceElementTasks = 1 + TWO process-design tags + element tag';
+SELECT 'TC033' AS TestCase, 'IsReferenceElementTasks = 1 + TWO process-design tags + element tag' AS Title;
 DECLARE @t0 datetime2 = SYSDATETIME();
 BEGIN TRY
     DECLARE @p2 Tag.TagModelTVP;
+    DECLARE @tag Tag.TagModelTVP;
     INSERT INTO @p2 VALUES (6737,N'BSP',0,366713,NULL,28,366713,5031,410129,0,NULL,'0001-01-01 00:00:00');
+    DELETE FROM @tag;
+    INSERT INTO @tag VALUES (6737,N'BSP',0,366713,NULL,28,366713,5031,410129,0,NULL,'0001-01-01 00:00:00');
+    UPDATE @tag SET TagName = N'$(ProcessName)', ElementTypeID = 2008;
+    INSERT INTO @p2 SELECT * FROM @tag;
+    DELETE FROM @tag;
+    INSERT INTO @tag VALUES (6737,N'BSP',0,366713,NULL,28,366713,5031,410129,0,NULL,'0001-01-01 00:00:00');
+    UPDATE @tag SET TagName = N'$(AltProcessName)', ElementTypeID = 2008;
+    INSERT INTO @p2 SELECT * FROM @tag;
     DECLARE @p9 WorkFlow.ProcessActivityFilterValueTVP;
     DECLARE @p10 WorkFlow.ProcessActivityFilterValueTVP;
     DECLARE @p13 WorkFlow.ProcessActivityFilterValueTVP;
     DECLARE @p14 WorkFlow.ProcessActivityFilterValueTVP;
-    INSERT INTO @p14 VALUES (-1);
-    SET @t0 = SYSDATETIME();
     BEGIN TRAN;
+    SET @t0 = SYSDATETIME();
     EXEC [WorkFlow].[uspGetProcessActivities]
          @EndDate=NULL
         ,@FilterTags=@p2
@@ -1806,65 +884,31 @@ BEGIN TRY
         ,@ProcessDateFilterAppliesTo=1
         ,@ProcessStatus=@p9
         ,@ProcessPriorities=@p10
-        ,@IsReferenceElementTasks=0
+        ,@IsReferenceElementTasks=1
         ,@StartDate=NULL
         ,@ProcessTypes=@p13
         ,@ProcessTriggers=@p14
         ,@UserID=285
         ,@RoleID=346314
         ,@ParentProcessInstanceID=0;
+    DECLARE @ms int = DATEDIFF(ms, @t0, SYSDATETIME());
     IF @@TRANCOUNT > 0 ROLLBACK TRAN;
     INSERT INTO #TestResults (TestCase, Title, Expectation, Outcome, DurationMs, MaxDurationMs, ErrorNumber, ErrorMessage)
-    VALUES ('TC087', '@ProcessTriggers with non-existent value (-1)', 'SUCCESS', 'SUCCESS', DATEDIFF(ms, @t0, SYSDATETIME()), NULL, NULL, NULL);
+    VALUES ('TC033', 'IsReferenceElementTasks = 1 + TWO process-design tags + element tag', 'DEFECT', 'SUCCESS', @ms, NULL, NULL, NULL);
 END TRY
 BEGIN CATCH
     IF @@TRANCOUNT > 0 ROLLBACK TRAN;
     INSERT INTO #TestResults (TestCase, Title, Expectation, Outcome, DurationMs, MaxDurationMs, ErrorNumber, ErrorMessage)
-    VALUES ('TC087', '@ProcessTriggers with non-existent value (-1)', 'SUCCESS', 'ERROR', DATEDIFF(ms, @t0, SYSDATETIME()), NULL, ERROR_NUMBER(), ERROR_MESSAGE());
+    VALUES ('TC033', 'IsReferenceElementTasks = 1 + TWO process-design tags + element tag', 'DEFECT', 'ERROR', DATEDIFF(ms, @t0, SYSDATETIME()), NULL, ERROR_NUMBER(), ERROR_MESSAGE());
 END CATCH
 GO
 -- ==========================================================================
--- TC090 | FilterValues | Omit all four filter-value TVP parameters
--- Expected: Omitted TVPs default to empty, so the result equals TC001.
+-- TC034 | ReferenceElementTasks | IsReferenceElementTasks = 1 with a non-existent UserID
+-- Expected: Same rows as TC030: the reference-element path has no user or role check. Confirm this is intended; otherwise it is an authorisation gap.
+-- Suspected defect: Reference-element path returns the same activities for any @UserID / @RoleID (no security filter).
 -- ==========================================================================
-PRINT '>> TC090 - Omit all four filter-value TVP parameters';
-SELECT 'TC090' AS TestCase, 'Omit all four filter-value TVP parameters' AS Title;
-DECLARE @t0 datetime2 = SYSDATETIME();
-BEGIN TRY
-    DECLARE @p2 Tag.TagModelTVP;
-    INSERT INTO @p2 VALUES (6737,N'BSP',0,366713,NULL,28,366713,5031,410129,0,NULL,'0001-01-01 00:00:00');
-    SET @t0 = SYSDATETIME();
-    BEGIN TRAN;
-    EXEC [WorkFlow].[uspGetProcessActivities]
-         @EndDate=NULL
-        ,@FilterTags=@p2
-        ,@IsMobileEnabled=NULL
-        ,@IsOpenActivity=1
-        ,@IsChildElementTasks=0
-        ,@ProcessTitle=1
-        ,@IsPersistentDataRequired=NULL
-        ,@ProcessDateFilterAppliesTo=1
-        ,@IsReferenceElementTasks=0
-        ,@StartDate=NULL
-        ,@UserID=285
-        ,@RoleID=346314
-        ,@ParentProcessInstanceID=0;
-    IF @@TRANCOUNT > 0 ROLLBACK TRAN;
-    INSERT INTO #TestResults (TestCase, Title, Expectation, Outcome, DurationMs, MaxDurationMs, ErrorNumber, ErrorMessage)
-    VALUES ('TC090', 'Omit all four filter-value TVP parameters', 'SUCCESS', 'SUCCESS', DATEDIFF(ms, @t0, SYSDATETIME()), NULL, NULL, NULL);
-END TRY
-BEGIN CATCH
-    IF @@TRANCOUNT > 0 ROLLBACK TRAN;
-    INSERT INTO #TestResults (TestCase, Title, Expectation, Outcome, DurationMs, MaxDurationMs, ErrorNumber, ErrorMessage)
-    VALUES ('TC090', 'Omit all four filter-value TVP parameters', 'SUCCESS', 'ERROR', DATEDIFF(ms, @t0, SYSDATETIME()), NULL, ERROR_NUMBER(), ERROR_MESSAGE());
-END CATCH
-GO
--- ==========================================================================
--- TC100 | Security | Non-existent UserID (999999999)
--- Expected: No error, zero rows. Must not leak other users' activities.
--- ==========================================================================
-PRINT '>> TC100 - Non-existent UserID (999999999)';
-SELECT 'TC100' AS TestCase, 'Non-existent UserID (999999999)' AS Title;
+PRINT '>> TC034 - IsReferenceElementTasks = 1 with a non-existent UserID';
+SELECT 'TC034' AS TestCase, 'IsReferenceElementTasks = 1 with a non-existent UserID' AS Title;
 DECLARE @t0 datetime2 = SYSDATETIME();
 BEGIN TRY
     DECLARE @p2 Tag.TagModelTVP;
@@ -1873,8 +917,8 @@ BEGIN TRY
     DECLARE @p10 WorkFlow.ProcessActivityFilterValueTVP;
     DECLARE @p13 WorkFlow.ProcessActivityFilterValueTVP;
     DECLARE @p14 WorkFlow.ProcessActivityFilterValueTVP;
-    SET @t0 = SYSDATETIME();
     BEGIN TRAN;
+    SET @t0 = SYSDATETIME();
     EXEC [WorkFlow].[uspGetProcessActivities]
          @EndDate=NULL
         ,@FilterTags=@p2
@@ -1886,29 +930,30 @@ BEGIN TRY
         ,@ProcessDateFilterAppliesTo=1
         ,@ProcessStatus=@p9
         ,@ProcessPriorities=@p10
-        ,@IsReferenceElementTasks=0
+        ,@IsReferenceElementTasks=1
         ,@StartDate=NULL
         ,@ProcessTypes=@p13
         ,@ProcessTriggers=@p14
         ,@UserID=999999999
         ,@RoleID=346314
         ,@ParentProcessInstanceID=0;
+    DECLARE @ms int = DATEDIFF(ms, @t0, SYSDATETIME());
     IF @@TRANCOUNT > 0 ROLLBACK TRAN;
     INSERT INTO #TestResults (TestCase, Title, Expectation, Outcome, DurationMs, MaxDurationMs, ErrorNumber, ErrorMessage)
-    VALUES ('TC100', 'Non-existent UserID (999999999)', 'SUCCESS', 'SUCCESS', DATEDIFF(ms, @t0, SYSDATETIME()), NULL, NULL, NULL);
+    VALUES ('TC034', 'IsReferenceElementTasks = 1 with a non-existent UserID', 'SUCCESS', 'SUCCESS', @ms, NULL, NULL, NULL);
 END TRY
 BEGIN CATCH
     IF @@TRANCOUNT > 0 ROLLBACK TRAN;
     INSERT INTO #TestResults (TestCase, Title, Expectation, Outcome, DurationMs, MaxDurationMs, ErrorNumber, ErrorMessage)
-    VALUES ('TC100', 'Non-existent UserID (999999999)', 'SUCCESS', 'ERROR', DATEDIFF(ms, @t0, SYSDATETIME()), NULL, ERROR_NUMBER(), ERROR_MESSAGE());
+    VALUES ('TC034', 'IsReferenceElementTasks = 1 with a non-existent UserID', 'SUCCESS', 'ERROR', DATEDIFF(ms, @t0, SYSDATETIME()), NULL, ERROR_NUMBER(), ERROR_MESSAGE());
 END CATCH
 GO
 -- ==========================================================================
--- TC101 | Security | UserID = NULL
--- Expected: Zero rows or a handled validation error. Must never return every user's activities.
+-- TC035 | ReferenceElementTasks | IsReferenceElementTasks = 1 and IsChildElementTasks = 1 with a parent
+-- Expected: Same as TC030: the reference-element branch takes priority, and the child-task flags are ignored.
 -- ==========================================================================
-PRINT '>> TC101 - UserID = NULL';
-SELECT 'TC101' AS TestCase, 'UserID = NULL' AS Title;
+PRINT '>> TC035 - IsReferenceElementTasks = 1 and IsChildElementTasks = 1 with a parent';
+SELECT 'TC035' AS TestCase, 'IsReferenceElementTasks = 1 and IsChildElementTasks = 1 with a parent' AS Title;
 DECLARE @t0 datetime2 = SYSDATETIME();
 BEGIN TRY
     DECLARE @p2 Tag.TagModelTVP;
@@ -1917,42 +962,43 @@ BEGIN TRY
     DECLARE @p10 WorkFlow.ProcessActivityFilterValueTVP;
     DECLARE @p13 WorkFlow.ProcessActivityFilterValueTVP;
     DECLARE @p14 WorkFlow.ProcessActivityFilterValueTVP;
-    SET @t0 = SYSDATETIME();
     BEGIN TRAN;
+    SET @t0 = SYSDATETIME();
     EXEC [WorkFlow].[uspGetProcessActivities]
          @EndDate=NULL
         ,@FilterTags=@p2
         ,@IsMobileEnabled=NULL
         ,@IsOpenActivity=1
-        ,@IsChildElementTasks=0
+        ,@IsChildElementTasks=1
         ,@ProcessTitle=1
         ,@IsPersistentDataRequired=NULL
         ,@ProcessDateFilterAppliesTo=1
         ,@ProcessStatus=@p9
         ,@ProcessPriorities=@p10
-        ,@IsReferenceElementTasks=0
+        ,@IsReferenceElementTasks=1
         ,@StartDate=NULL
         ,@ProcessTypes=@p13
         ,@ProcessTriggers=@p14
-        ,@UserID=NULL
+        ,@UserID=285
         ,@RoleID=346314
-        ,@ParentProcessInstanceID=0;
+        ,@ParentProcessInstanceID=$(ParentProcessInstanceID);
+    DECLARE @ms int = DATEDIFF(ms, @t0, SYSDATETIME());
     IF @@TRANCOUNT > 0 ROLLBACK TRAN;
     INSERT INTO #TestResults (TestCase, Title, Expectation, Outcome, DurationMs, MaxDurationMs, ErrorNumber, ErrorMessage)
-    VALUES ('TC101', 'UserID = NULL', 'ANY', 'SUCCESS', DATEDIFF(ms, @t0, SYSDATETIME()), NULL, NULL, NULL);
+    VALUES ('TC035', 'IsReferenceElementTasks = 1 and IsChildElementTasks = 1 with a parent', 'SUCCESS', 'SUCCESS', @ms, NULL, NULL, NULL);
 END TRY
 BEGIN CATCH
     IF @@TRANCOUNT > 0 ROLLBACK TRAN;
     INSERT INTO #TestResults (TestCase, Title, Expectation, Outcome, DurationMs, MaxDurationMs, ErrorNumber, ErrorMessage)
-    VALUES ('TC101', 'UserID = NULL', 'ANY', 'ERROR', DATEDIFF(ms, @t0, SYSDATETIME()), NULL, ERROR_NUMBER(), ERROR_MESSAGE());
+    VALUES ('TC035', 'IsReferenceElementTasks = 1 and IsChildElementTasks = 1 with a parent', 'SUCCESS', 'ERROR', DATEDIFF(ms, @t0, SYSDATETIME()), NULL, ERROR_NUMBER(), ERROR_MESSAGE());
 END CATCH
 GO
 -- ==========================================================================
--- TC102 | Security | UserID = 0
--- Expected: No error, zero rows.
+-- TC040 | ChildElementTasks | IsChildElementTasks = 1, ParentProcessInstanceID = 0
+-- Expected: Identical result sets to TC001. The child branch needs ParentProcessInstanceID > 0, so the user/role path runs.
 -- ==========================================================================
-PRINT '>> TC102 - UserID = 0';
-SELECT 'TC102' AS TestCase, 'UserID = 0' AS Title;
+PRINT '>> TC040 - IsChildElementTasks = 1, ParentProcessInstanceID = 0';
+SELECT 'TC040' AS TestCase, 'IsChildElementTasks = 1, ParentProcessInstanceID = 0' AS Title;
 DECLARE @t0 datetime2 = SYSDATETIME();
 BEGIN TRY
     DECLARE @p2 Tag.TagModelTVP;
@@ -1961,58 +1007,14 @@ BEGIN TRY
     DECLARE @p10 WorkFlow.ProcessActivityFilterValueTVP;
     DECLARE @p13 WorkFlow.ProcessActivityFilterValueTVP;
     DECLARE @p14 WorkFlow.ProcessActivityFilterValueTVP;
-    SET @t0 = SYSDATETIME();
     BEGIN TRAN;
+    SET @t0 = SYSDATETIME();
     EXEC [WorkFlow].[uspGetProcessActivities]
          @EndDate=NULL
         ,@FilterTags=@p2
         ,@IsMobileEnabled=NULL
         ,@IsOpenActivity=1
-        ,@IsChildElementTasks=0
-        ,@ProcessTitle=1
-        ,@IsPersistentDataRequired=NULL
-        ,@ProcessDateFilterAppliesTo=1
-        ,@ProcessStatus=@p9
-        ,@ProcessPriorities=@p10
-        ,@IsReferenceElementTasks=0
-        ,@StartDate=NULL
-        ,@ProcessTypes=@p13
-        ,@ProcessTriggers=@p14
-        ,@UserID=0
-        ,@RoleID=346314
-        ,@ParentProcessInstanceID=0;
-    IF @@TRANCOUNT > 0 ROLLBACK TRAN;
-    INSERT INTO #TestResults (TestCase, Title, Expectation, Outcome, DurationMs, MaxDurationMs, ErrorNumber, ErrorMessage)
-    VALUES ('TC102', 'UserID = 0', 'SUCCESS', 'SUCCESS', DATEDIFF(ms, @t0, SYSDATETIME()), NULL, NULL, NULL);
-END TRY
-BEGIN CATCH
-    IF @@TRANCOUNT > 0 ROLLBACK TRAN;
-    INSERT INTO #TestResults (TestCase, Title, Expectation, Outcome, DurationMs, MaxDurationMs, ErrorNumber, ErrorMessage)
-    VALUES ('TC102', 'UserID = 0', 'SUCCESS', 'ERROR', DATEDIFF(ms, @t0, SYSDATETIME()), NULL, ERROR_NUMBER(), ERROR_MESSAGE());
-END CATCH
-GO
--- ==========================================================================
--- TC103 | Security | Non-existent RoleID (-1)
--- Expected: No error. Zero rows, or only activities assigned directly to the user rather than a role.
--- ==========================================================================
-PRINT '>> TC103 - Non-existent RoleID (-1)';
-SELECT 'TC103' AS TestCase, 'Non-existent RoleID (-1)' AS Title;
-DECLARE @t0 datetime2 = SYSDATETIME();
-BEGIN TRY
-    DECLARE @p2 Tag.TagModelTVP;
-    INSERT INTO @p2 VALUES (6737,N'BSP',0,366713,NULL,28,366713,5031,410129,0,NULL,'0001-01-01 00:00:00');
-    DECLARE @p9 WorkFlow.ProcessActivityFilterValueTVP;
-    DECLARE @p10 WorkFlow.ProcessActivityFilterValueTVP;
-    DECLARE @p13 WorkFlow.ProcessActivityFilterValueTVP;
-    DECLARE @p14 WorkFlow.ProcessActivityFilterValueTVP;
-    SET @t0 = SYSDATETIME();
-    BEGIN TRAN;
-    EXEC [WorkFlow].[uspGetProcessActivities]
-         @EndDate=NULL
-        ,@FilterTags=@p2
-        ,@IsMobileEnabled=NULL
-        ,@IsOpenActivity=1
-        ,@IsChildElementTasks=0
+        ,@IsChildElementTasks=1
         ,@ProcessTitle=1
         ,@IsPersistentDataRequired=NULL
         ,@ProcessDateFilterAppliesTo=1
@@ -2023,155 +1025,25 @@ BEGIN TRY
         ,@ProcessTypes=@p13
         ,@ProcessTriggers=@p14
         ,@UserID=285
-        ,@RoleID=-1
-        ,@ParentProcessInstanceID=0;
-    IF @@TRANCOUNT > 0 ROLLBACK TRAN;
-    INSERT INTO #TestResults (TestCase, Title, Expectation, Outcome, DurationMs, MaxDurationMs, ErrorNumber, ErrorMessage)
-    VALUES ('TC103', 'Non-existent RoleID (-1)', 'SUCCESS', 'SUCCESS', DATEDIFF(ms, @t0, SYSDATETIME()), NULL, NULL, NULL);
-END TRY
-BEGIN CATCH
-    IF @@TRANCOUNT > 0 ROLLBACK TRAN;
-    INSERT INTO #TestResults (TestCase, Title, Expectation, Outcome, DurationMs, MaxDurationMs, ErrorNumber, ErrorMessage)
-    VALUES ('TC103', 'Non-existent RoleID (-1)', 'SUCCESS', 'ERROR', DATEDIFF(ms, @t0, SYSDATETIME()), NULL, ERROR_NUMBER(), ERROR_MESSAGE());
-END CATCH
-GO
--- ==========================================================================
--- TC104 | Security | RoleID = NULL
--- Expected: Zero rows or user-only activities, or a handled validation error.
--- ==========================================================================
-PRINT '>> TC104 - RoleID = NULL';
-SELECT 'TC104' AS TestCase, 'RoleID = NULL' AS Title;
-DECLARE @t0 datetime2 = SYSDATETIME();
-BEGIN TRY
-    DECLARE @p2 Tag.TagModelTVP;
-    INSERT INTO @p2 VALUES (6737,N'BSP',0,366713,NULL,28,366713,5031,410129,0,NULL,'0001-01-01 00:00:00');
-    DECLARE @p9 WorkFlow.ProcessActivityFilterValueTVP;
-    DECLARE @p10 WorkFlow.ProcessActivityFilterValueTVP;
-    DECLARE @p13 WorkFlow.ProcessActivityFilterValueTVP;
-    DECLARE @p14 WorkFlow.ProcessActivityFilterValueTVP;
-    SET @t0 = SYSDATETIME();
-    BEGIN TRAN;
-    EXEC [WorkFlow].[uspGetProcessActivities]
-         @EndDate=NULL
-        ,@FilterTags=@p2
-        ,@IsMobileEnabled=NULL
-        ,@IsOpenActivity=1
-        ,@IsChildElementTasks=0
-        ,@ProcessTitle=1
-        ,@IsPersistentDataRequired=NULL
-        ,@ProcessDateFilterAppliesTo=1
-        ,@ProcessStatus=@p9
-        ,@ProcessPriorities=@p10
-        ,@IsReferenceElementTasks=0
-        ,@StartDate=NULL
-        ,@ProcessTypes=@p13
-        ,@ProcessTriggers=@p14
-        ,@UserID=285
-        ,@RoleID=NULL
-        ,@ParentProcessInstanceID=0;
-    IF @@TRANCOUNT > 0 ROLLBACK TRAN;
-    INSERT INTO #TestResults (TestCase, Title, Expectation, Outcome, DurationMs, MaxDurationMs, ErrorNumber, ErrorMessage)
-    VALUES ('TC104', 'RoleID = NULL', 'ANY', 'SUCCESS', DATEDIFF(ms, @t0, SYSDATETIME()), NULL, NULL, NULL);
-END TRY
-BEGIN CATCH
-    IF @@TRANCOUNT > 0 ROLLBACK TRAN;
-    INSERT INTO #TestResults (TestCase, Title, Expectation, Outcome, DurationMs, MaxDurationMs, ErrorNumber, ErrorMessage)
-    VALUES ('TC104', 'RoleID = NULL', 'ANY', 'ERROR', DATEDIFF(ms, @t0, SYSDATETIME()), NULL, ERROR_NUMBER(), ERROR_MESSAGE());
-END CATCH
-GO
--- ==========================================================================
--- TC105 | Security | Valid role the user is NOT a member of
--- Expected: Must not return the role's activities to user 285 (authorisation check).
--- ==========================================================================
-PRINT '>> TC105 - Valid role the user is NOT a member of';
-SELECT 'TC105' AS TestCase, 'Valid role the user is NOT a member of' AS Title;
-DECLARE @t0 datetime2 = SYSDATETIME();
-BEGIN TRY
-    DECLARE @p2 Tag.TagModelTVP;
-    INSERT INTO @p2 VALUES (6737,N'BSP',0,366713,NULL,28,366713,5031,410129,0,NULL,'0001-01-01 00:00:00');
-    DECLARE @p9 WorkFlow.ProcessActivityFilterValueTVP;
-    DECLARE @p10 WorkFlow.ProcessActivityFilterValueTVP;
-    DECLARE @p13 WorkFlow.ProcessActivityFilterValueTVP;
-    DECLARE @p14 WorkFlow.ProcessActivityFilterValueTVP;
-    SET @t0 = SYSDATETIME();
-    BEGIN TRAN;
-    EXEC [WorkFlow].[uspGetProcessActivities]
-         @EndDate=NULL
-        ,@FilterTags=@p2
-        ,@IsMobileEnabled=NULL
-        ,@IsOpenActivity=1
-        ,@IsChildElementTasks=0
-        ,@ProcessTitle=1
-        ,@IsPersistentDataRequired=NULL
-        ,@ProcessDateFilterAppliesTo=1
-        ,@ProcessStatus=@p9
-        ,@ProcessPriorities=@p10
-        ,@IsReferenceElementTasks=0
-        ,@StartDate=NULL
-        ,@ProcessTypes=@p13
-        ,@ProcessTriggers=@p14
-        ,@UserID=285
-        ,@RoleID=$(OtherRoleID)
-        ,@ParentProcessInstanceID=0;
-    IF @@TRANCOUNT > 0 ROLLBACK TRAN;
-    INSERT INTO #TestResults (TestCase, Title, Expectation, Outcome, DurationMs, MaxDurationMs, ErrorNumber, ErrorMessage)
-    VALUES ('TC105', 'Valid role the user is NOT a member of', 'SUCCESS', 'SUCCESS', DATEDIFF(ms, @t0, SYSDATETIME()), NULL, NULL, NULL);
-END TRY
-BEGIN CATCH
-    IF @@TRANCOUNT > 0 ROLLBACK TRAN;
-    INSERT INTO #TestResults (TestCase, Title, Expectation, Outcome, DurationMs, MaxDurationMs, ErrorNumber, ErrorMessage)
-    VALUES ('TC105', 'Valid role the user is NOT a member of', 'SUCCESS', 'ERROR', DATEDIFF(ms, @t0, SYSDATETIME()), NULL, ERROR_NUMBER(), ERROR_MESSAGE());
-END CATCH
-GO
--- ==========================================================================
--- TC106 | Security | Omit @UserID
--- Expected: Error 201 ('expects parameter @UserID') if the parameter has no default; otherwise the documented default.
--- ==========================================================================
-PRINT '>> TC106 - Omit @UserID';
-SELECT 'TC106' AS TestCase, 'Omit @UserID' AS Title;
-DECLARE @t0 datetime2 = SYSDATETIME();
-BEGIN TRY
-    DECLARE @p2 Tag.TagModelTVP;
-    INSERT INTO @p2 VALUES (6737,N'BSP',0,366713,NULL,28,366713,5031,410129,0,NULL,'0001-01-01 00:00:00');
-    DECLARE @p9 WorkFlow.ProcessActivityFilterValueTVP;
-    DECLARE @p10 WorkFlow.ProcessActivityFilterValueTVP;
-    DECLARE @p13 WorkFlow.ProcessActivityFilterValueTVP;
-    DECLARE @p14 WorkFlow.ProcessActivityFilterValueTVP;
-    SET @t0 = SYSDATETIME();
-    BEGIN TRAN;
-    EXEC [WorkFlow].[uspGetProcessActivities]
-         @EndDate=NULL
-        ,@FilterTags=@p2
-        ,@IsMobileEnabled=NULL
-        ,@IsOpenActivity=1
-        ,@IsChildElementTasks=0
-        ,@ProcessTitle=1
-        ,@IsPersistentDataRequired=NULL
-        ,@ProcessDateFilterAppliesTo=1
-        ,@ProcessStatus=@p9
-        ,@ProcessPriorities=@p10
-        ,@IsReferenceElementTasks=0
-        ,@StartDate=NULL
-        ,@ProcessTypes=@p13
-        ,@ProcessTriggers=@p14
         ,@RoleID=346314
         ,@ParentProcessInstanceID=0;
+    DECLARE @ms int = DATEDIFF(ms, @t0, SYSDATETIME());
     IF @@TRANCOUNT > 0 ROLLBACK TRAN;
     INSERT INTO #TestResults (TestCase, Title, Expectation, Outcome, DurationMs, MaxDurationMs, ErrorNumber, ErrorMessage)
-    VALUES ('TC106', 'Omit @UserID', 'ANY', 'SUCCESS', DATEDIFF(ms, @t0, SYSDATETIME()), NULL, NULL, NULL);
+    VALUES ('TC040', 'IsChildElementTasks = 1, ParentProcessInstanceID = 0', 'SUCCESS', 'SUCCESS', @ms, NULL, NULL, NULL);
 END TRY
 BEGIN CATCH
     IF @@TRANCOUNT > 0 ROLLBACK TRAN;
     INSERT INTO #TestResults (TestCase, Title, Expectation, Outcome, DurationMs, MaxDurationMs, ErrorNumber, ErrorMessage)
-    VALUES ('TC106', 'Omit @UserID', 'ANY', 'ERROR', DATEDIFF(ms, @t0, SYSDATETIME()), NULL, ERROR_NUMBER(), ERROR_MESSAGE());
+    VALUES ('TC040', 'IsChildElementTasks = 1, ParentProcessInstanceID = 0', 'SUCCESS', 'ERROR', DATEDIFF(ms, @t0, SYSDATETIME()), NULL, ERROR_NUMBER(), ERROR_MESSAGE());
 END CATCH
 GO
 -- ==========================================================================
--- TC110 | ParentProcess | Valid ParentProcessInstanceID
--- Expected: Only activities of child processes of instance $(ParentProcessInstanceID).
+-- TC041 | ChildElementTasks | IsChildElementTasks = 1, valid ParentProcessInstanceID
+-- Expected: The latest activity of every child process of $(ParentProcessInstanceID). User, role, tags (except process-design), IsOpenActivity and the dates are not applied.
 -- ==========================================================================
-PRINT '>> TC110 - Valid ParentProcessInstanceID';
-SELECT 'TC110' AS TestCase, 'Valid ParentProcessInstanceID' AS Title;
+PRINT '>> TC041 - IsChildElementTasks = 1, valid ParentProcessInstanceID';
+SELECT 'TC041' AS TestCase, 'IsChildElementTasks = 1, valid ParentProcessInstanceID' AS Title;
 DECLARE @t0 datetime2 = SYSDATETIME();
 BEGIN TRY
     DECLARE @p2 Tag.TagModelTVP;
@@ -2180,8 +1052,189 @@ BEGIN TRY
     DECLARE @p10 WorkFlow.ProcessActivityFilterValueTVP;
     DECLARE @p13 WorkFlow.ProcessActivityFilterValueTVP;
     DECLARE @p14 WorkFlow.ProcessActivityFilterValueTVP;
-    SET @t0 = SYSDATETIME();
     BEGIN TRAN;
+    SET @t0 = SYSDATETIME();
+    EXEC [WorkFlow].[uspGetProcessActivities]
+         @EndDate=NULL
+        ,@FilterTags=@p2
+        ,@IsMobileEnabled=NULL
+        ,@IsOpenActivity=1
+        ,@IsChildElementTasks=1
+        ,@ProcessTitle=1
+        ,@IsPersistentDataRequired=NULL
+        ,@ProcessDateFilterAppliesTo=1
+        ,@ProcessStatus=@p9
+        ,@ProcessPriorities=@p10
+        ,@IsReferenceElementTasks=0
+        ,@StartDate=NULL
+        ,@ProcessTypes=@p13
+        ,@ProcessTriggers=@p14
+        ,@UserID=285
+        ,@RoleID=346314
+        ,@ParentProcessInstanceID=$(ParentProcessInstanceID);
+    DECLARE @ms int = DATEDIFF(ms, @t0, SYSDATETIME());
+    IF @@TRANCOUNT > 0 ROLLBACK TRAN;
+    INSERT INTO #TestResults (TestCase, Title, Expectation, Outcome, DurationMs, MaxDurationMs, ErrorNumber, ErrorMessage)
+    VALUES ('TC041', 'IsChildElementTasks = 1, valid ParentProcessInstanceID', 'SUCCESS', 'SUCCESS', @ms, NULL, NULL, NULL);
+END TRY
+BEGIN CATCH
+    IF @@TRANCOUNT > 0 ROLLBACK TRAN;
+    INSERT INTO #TestResults (TestCase, Title, Expectation, Outcome, DurationMs, MaxDurationMs, ErrorNumber, ErrorMessage)
+    VALUES ('TC041', 'IsChildElementTasks = 1, valid ParentProcessInstanceID', 'SUCCESS', 'ERROR', DATEDIFF(ms, @t0, SYSDATETIME()), NULL, ERROR_NUMBER(), ERROR_MESSAGE());
+END CATCH
+GO
+-- ==========================================================================
+-- TC042 | ChildElementTasks | IsChildElementTasks = 1 + parent + IsOpenActivity = 0 + date range
+-- Expected: Same rows as TC041: the child branch ignores IsOpenActivity, StartDate and EndDate. Confirm with the business whether these filters should apply.
+-- Suspected defect: Child-task branch ignores @IsOpenActivity, @StartDate and @EndDate.
+-- ==========================================================================
+PRINT '>> TC042 - IsChildElementTasks = 1 + parent + IsOpenActivity = 0 + date range';
+SELECT 'TC042' AS TestCase, 'IsChildElementTasks = 1 + parent + IsOpenActivity = 0 + date range' AS Title;
+DECLARE @t0 datetime2 = SYSDATETIME();
+BEGIN TRY
+    DECLARE @p2 Tag.TagModelTVP;
+    INSERT INTO @p2 VALUES (6737,N'BSP',0,366713,NULL,28,366713,5031,410129,0,NULL,'0001-01-01 00:00:00');
+    DECLARE @p9 WorkFlow.ProcessActivityFilterValueTVP;
+    DECLARE @p10 WorkFlow.ProcessActivityFilterValueTVP;
+    DECLARE @p13 WorkFlow.ProcessActivityFilterValueTVP;
+    DECLARE @p14 WorkFlow.ProcessActivityFilterValueTVP;
+    BEGIN TRAN;
+    SET @t0 = SYSDATETIME();
+    EXEC [WorkFlow].[uspGetProcessActivities]
+         @EndDate='$(EndDate)'
+        ,@FilterTags=@p2
+        ,@IsMobileEnabled=NULL
+        ,@IsOpenActivity=0
+        ,@IsChildElementTasks=1
+        ,@ProcessTitle=1
+        ,@IsPersistentDataRequired=NULL
+        ,@ProcessDateFilterAppliesTo=1
+        ,@ProcessStatus=@p9
+        ,@ProcessPriorities=@p10
+        ,@IsReferenceElementTasks=0
+        ,@StartDate='$(StartDate)'
+        ,@ProcessTypes=@p13
+        ,@ProcessTriggers=@p14
+        ,@UserID=285
+        ,@RoleID=346314
+        ,@ParentProcessInstanceID=$(ParentProcessInstanceID);
+    DECLARE @ms int = DATEDIFF(ms, @t0, SYSDATETIME());
+    IF @@TRANCOUNT > 0 ROLLBACK TRAN;
+    INSERT INTO #TestResults (TestCase, Title, Expectation, Outcome, DurationMs, MaxDurationMs, ErrorNumber, ErrorMessage)
+    VALUES ('TC042', 'IsChildElementTasks = 1 + parent + IsOpenActivity = 0 + date range', 'SUCCESS', 'SUCCESS', @ms, NULL, NULL, NULL);
+END TRY
+BEGIN CATCH
+    IF @@TRANCOUNT > 0 ROLLBACK TRAN;
+    INSERT INTO #TestResults (TestCase, Title, Expectation, Outcome, DurationMs, MaxDurationMs, ErrorNumber, ErrorMessage)
+    VALUES ('TC042', 'IsChildElementTasks = 1 + parent + IsOpenActivity = 0 + date range', 'SUCCESS', 'ERROR', DATEDIFF(ms, @t0, SYSDATETIME()), NULL, ERROR_NUMBER(), ERROR_MESSAGE());
+END CATCH
+GO
+-- ==========================================================================
+-- TC043 | ChildElementTasks | IsChildElementTasks = 1, ParentProcessInstanceID = -1
+-- Expected: Identical result sets to TC001 (-1 is not > 0, so the user/role path runs).
+-- ==========================================================================
+PRINT '>> TC043 - IsChildElementTasks = 1, ParentProcessInstanceID = -1';
+SELECT 'TC043' AS TestCase, 'IsChildElementTasks = 1, ParentProcessInstanceID = -1' AS Title;
+DECLARE @t0 datetime2 = SYSDATETIME();
+BEGIN TRY
+    DECLARE @p2 Tag.TagModelTVP;
+    INSERT INTO @p2 VALUES (6737,N'BSP',0,366713,NULL,28,366713,5031,410129,0,NULL,'0001-01-01 00:00:00');
+    DECLARE @p9 WorkFlow.ProcessActivityFilterValueTVP;
+    DECLARE @p10 WorkFlow.ProcessActivityFilterValueTVP;
+    DECLARE @p13 WorkFlow.ProcessActivityFilterValueTVP;
+    DECLARE @p14 WorkFlow.ProcessActivityFilterValueTVP;
+    BEGIN TRAN;
+    SET @t0 = SYSDATETIME();
+    EXEC [WorkFlow].[uspGetProcessActivities]
+         @EndDate=NULL
+        ,@FilterTags=@p2
+        ,@IsMobileEnabled=NULL
+        ,@IsOpenActivity=1
+        ,@IsChildElementTasks=1
+        ,@ProcessTitle=1
+        ,@IsPersistentDataRequired=NULL
+        ,@ProcessDateFilterAppliesTo=1
+        ,@ProcessStatus=@p9
+        ,@ProcessPriorities=@p10
+        ,@IsReferenceElementTasks=0
+        ,@StartDate=NULL
+        ,@ProcessTypes=@p13
+        ,@ProcessTriggers=@p14
+        ,@UserID=285
+        ,@RoleID=346314
+        ,@ParentProcessInstanceID=-1;
+    DECLARE @ms int = DATEDIFF(ms, @t0, SYSDATETIME());
+    IF @@TRANCOUNT > 0 ROLLBACK TRAN;
+    INSERT INTO #TestResults (TestCase, Title, Expectation, Outcome, DurationMs, MaxDurationMs, ErrorNumber, ErrorMessage)
+    VALUES ('TC043', 'IsChildElementTasks = 1, ParentProcessInstanceID = -1', 'SUCCESS', 'SUCCESS', @ms, NULL, NULL, NULL);
+END TRY
+BEGIN CATCH
+    IF @@TRANCOUNT > 0 ROLLBACK TRAN;
+    INSERT INTO #TestResults (TestCase, Title, Expectation, Outcome, DurationMs, MaxDurationMs, ErrorNumber, ErrorMessage)
+    VALUES ('TC043', 'IsChildElementTasks = 1, ParentProcessInstanceID = -1', 'SUCCESS', 'ERROR', DATEDIFF(ms, @t0, SYSDATETIME()), NULL, ERROR_NUMBER(), ERROR_MESSAGE());
+END CATCH
+GO
+-- ==========================================================================
+-- TC044 | ChildElementTasks | IsChildElementTasks = 1, non-existent parent
+-- Expected: No error. Sets (1), (2) and (4) are empty.
+-- ==========================================================================
+PRINT '>> TC044 - IsChildElementTasks = 1, non-existent parent';
+SELECT 'TC044' AS TestCase, 'IsChildElementTasks = 1, non-existent parent' AS Title;
+DECLARE @t0 datetime2 = SYSDATETIME();
+BEGIN TRY
+    DECLARE @p2 Tag.TagModelTVP;
+    INSERT INTO @p2 VALUES (6737,N'BSP',0,366713,NULL,28,366713,5031,410129,0,NULL,'0001-01-01 00:00:00');
+    DECLARE @p9 WorkFlow.ProcessActivityFilterValueTVP;
+    DECLARE @p10 WorkFlow.ProcessActivityFilterValueTVP;
+    DECLARE @p13 WorkFlow.ProcessActivityFilterValueTVP;
+    DECLARE @p14 WorkFlow.ProcessActivityFilterValueTVP;
+    BEGIN TRAN;
+    SET @t0 = SYSDATETIME();
+    EXEC [WorkFlow].[uspGetProcessActivities]
+         @EndDate=NULL
+        ,@FilterTags=@p2
+        ,@IsMobileEnabled=NULL
+        ,@IsOpenActivity=1
+        ,@IsChildElementTasks=1
+        ,@ProcessTitle=1
+        ,@IsPersistentDataRequired=NULL
+        ,@ProcessDateFilterAppliesTo=1
+        ,@ProcessStatus=@p9
+        ,@ProcessPriorities=@p10
+        ,@IsReferenceElementTasks=0
+        ,@StartDate=NULL
+        ,@ProcessTypes=@p13
+        ,@ProcessTriggers=@p14
+        ,@UserID=285
+        ,@RoleID=346314
+        ,@ParentProcessInstanceID=999999999999;
+    DECLARE @ms int = DATEDIFF(ms, @t0, SYSDATETIME());
+    IF @@TRANCOUNT > 0 ROLLBACK TRAN;
+    INSERT INTO #TestResults (TestCase, Title, Expectation, Outcome, DurationMs, MaxDurationMs, ErrorNumber, ErrorMessage)
+    VALUES ('TC044', 'IsChildElementTasks = 1, non-existent parent', 'SUCCESS', 'SUCCESS', @ms, NULL, NULL, NULL);
+END TRY
+BEGIN CATCH
+    IF @@TRANCOUNT > 0 ROLLBACK TRAN;
+    INSERT INTO #TestResults (TestCase, Title, Expectation, Outcome, DurationMs, MaxDurationMs, ErrorNumber, ErrorMessage)
+    VALUES ('TC044', 'IsChildElementTasks = 1, non-existent parent', 'SUCCESS', 'ERROR', DATEDIFF(ms, @t0, SYSDATETIME()), NULL, ERROR_NUMBER(), ERROR_MESSAGE());
+END CATCH
+GO
+-- ==========================================================================
+-- TC045 | ChildElementTasks | Valid parent but IsChildElementTasks = 0
+-- Expected: Identical result sets to TC001. ParentProcessInstanceID is ignored without the flag.
+-- ==========================================================================
+PRINT '>> TC045 - Valid parent but IsChildElementTasks = 0';
+SELECT 'TC045' AS TestCase, 'Valid parent but IsChildElementTasks = 0' AS Title;
+DECLARE @t0 datetime2 = SYSDATETIME();
+BEGIN TRY
+    DECLARE @p2 Tag.TagModelTVP;
+    INSERT INTO @p2 VALUES (6737,N'BSP',0,366713,NULL,28,366713,5031,410129,0,NULL,'0001-01-01 00:00:00');
+    DECLARE @p9 WorkFlow.ProcessActivityFilterValueTVP;
+    DECLARE @p10 WorkFlow.ProcessActivityFilterValueTVP;
+    DECLARE @p13 WorkFlow.ProcessActivityFilterValueTVP;
+    DECLARE @p14 WorkFlow.ProcessActivityFilterValueTVP;
+    BEGIN TRAN;
+    SET @t0 = SYSDATETIME();
     EXEC [WorkFlow].[uspGetProcessActivities]
          @EndDate=NULL
         ,@FilterTags=@p2
@@ -2200,22 +1253,23 @@ BEGIN TRY
         ,@UserID=285
         ,@RoleID=346314
         ,@ParentProcessInstanceID=$(ParentProcessInstanceID);
+    DECLARE @ms int = DATEDIFF(ms, @t0, SYSDATETIME());
     IF @@TRANCOUNT > 0 ROLLBACK TRAN;
     INSERT INTO #TestResults (TestCase, Title, Expectation, Outcome, DurationMs, MaxDurationMs, ErrorNumber, ErrorMessage)
-    VALUES ('TC110', 'Valid ParentProcessInstanceID', 'SUCCESS', 'SUCCESS', DATEDIFF(ms, @t0, SYSDATETIME()), NULL, NULL, NULL);
+    VALUES ('TC045', 'Valid parent but IsChildElementTasks = 0', 'SUCCESS', 'SUCCESS', @ms, NULL, NULL, NULL);
 END TRY
 BEGIN CATCH
     IF @@TRANCOUNT > 0 ROLLBACK TRAN;
     INSERT INTO #TestResults (TestCase, Title, Expectation, Outcome, DurationMs, MaxDurationMs, ErrorNumber, ErrorMessage)
-    VALUES ('TC110', 'Valid ParentProcessInstanceID', 'SUCCESS', 'ERROR', DATEDIFF(ms, @t0, SYSDATETIME()), NULL, ERROR_NUMBER(), ERROR_MESSAGE());
+    VALUES ('TC045', 'Valid parent but IsChildElementTasks = 0', 'SUCCESS', 'ERROR', DATEDIFF(ms, @t0, SYSDATETIME()), NULL, ERROR_NUMBER(), ERROR_MESSAGE());
 END CATCH
 GO
 -- ==========================================================================
--- TC111 | ParentProcess | Non-existent ParentProcessInstanceID (-1)
--- Expected: No error, zero rows.
+-- TC050 | IsMobileEnabled | IsMobileEnabled = 1
+-- Expected: Subset of TC001: only processes whose SupportedClient attribute = 2.
 -- ==========================================================================
-PRINT '>> TC111 - Non-existent ParentProcessInstanceID (-1)';
-SELECT 'TC111' AS TestCase, 'Non-existent ParentProcessInstanceID (-1)' AS Title;
+PRINT '>> TC050 - IsMobileEnabled = 1';
+SELECT 'TC050' AS TestCase, 'IsMobileEnabled = 1' AS Title;
 DECLARE @t0 datetime2 = SYSDATETIME();
 BEGIN TRY
     DECLARE @p2 Tag.TagModelTVP;
@@ -2224,108 +1278,197 @@ BEGIN TRY
     DECLARE @p10 WorkFlow.ProcessActivityFilterValueTVP;
     DECLARE @p13 WorkFlow.ProcessActivityFilterValueTVP;
     DECLARE @p14 WorkFlow.ProcessActivityFilterValueTVP;
-    SET @t0 = SYSDATETIME();
     BEGIN TRAN;
+    SET @t0 = SYSDATETIME();
     EXEC [WorkFlow].[uspGetProcessActivities]
          @EndDate=NULL
-        ,@FilterTags=@p2
-        ,@IsMobileEnabled=NULL
-        ,@IsOpenActivity=1
-        ,@IsChildElementTasks=0
-        ,@ProcessTitle=1
-        ,@IsPersistentDataRequired=NULL
-        ,@ProcessDateFilterAppliesTo=1
-        ,@ProcessStatus=@p9
-        ,@ProcessPriorities=@p10
-        ,@IsReferenceElementTasks=0
-        ,@StartDate=NULL
-        ,@ProcessTypes=@p13
-        ,@ProcessTriggers=@p14
-        ,@UserID=285
-        ,@RoleID=346314
-        ,@ParentProcessInstanceID=-1;
-    IF @@TRANCOUNT > 0 ROLLBACK TRAN;
-    INSERT INTO #TestResults (TestCase, Title, Expectation, Outcome, DurationMs, MaxDurationMs, ErrorNumber, ErrorMessage)
-    VALUES ('TC111', 'Non-existent ParentProcessInstanceID (-1)', 'SUCCESS', 'SUCCESS', DATEDIFF(ms, @t0, SYSDATETIME()), NULL, NULL, NULL);
-END TRY
-BEGIN CATCH
-    IF @@TRANCOUNT > 0 ROLLBACK TRAN;
-    INSERT INTO #TestResults (TestCase, Title, Expectation, Outcome, DurationMs, MaxDurationMs, ErrorNumber, ErrorMessage)
-    VALUES ('TC111', 'Non-existent ParentProcessInstanceID (-1)', 'SUCCESS', 'ERROR', DATEDIFF(ms, @t0, SYSDATETIME()), NULL, ERROR_NUMBER(), ERROR_MESSAGE());
-END CATCH
-GO
--- ==========================================================================
--- TC112 | ParentProcess | ParentProcessInstanceID = NULL
--- Expected: No error. Same as 0 (no parent filter).
--- ==========================================================================
-PRINT '>> TC112 - ParentProcessInstanceID = NULL';
-SELECT 'TC112' AS TestCase, 'ParentProcessInstanceID = NULL' AS Title;
-DECLARE @t0 datetime2 = SYSDATETIME();
-BEGIN TRY
-    DECLARE @p2 Tag.TagModelTVP;
-    INSERT INTO @p2 VALUES (6737,N'BSP',0,366713,NULL,28,366713,5031,410129,0,NULL,'0001-01-01 00:00:00');
-    DECLARE @p9 WorkFlow.ProcessActivityFilterValueTVP;
-    DECLARE @p10 WorkFlow.ProcessActivityFilterValueTVP;
-    DECLARE @p13 WorkFlow.ProcessActivityFilterValueTVP;
-    DECLARE @p14 WorkFlow.ProcessActivityFilterValueTVP;
-    SET @t0 = SYSDATETIME();
-    BEGIN TRAN;
-    EXEC [WorkFlow].[uspGetProcessActivities]
-         @EndDate=NULL
-        ,@FilterTags=@p2
-        ,@IsMobileEnabled=NULL
-        ,@IsOpenActivity=1
-        ,@IsChildElementTasks=0
-        ,@ProcessTitle=1
-        ,@IsPersistentDataRequired=NULL
-        ,@ProcessDateFilterAppliesTo=1
-        ,@ProcessStatus=@p9
-        ,@ProcessPriorities=@p10
-        ,@IsReferenceElementTasks=0
-        ,@StartDate=NULL
-        ,@ProcessTypes=@p13
-        ,@ProcessTriggers=@p14
-        ,@UserID=285
-        ,@RoleID=346314
-        ,@ParentProcessInstanceID=NULL;
-    IF @@TRANCOUNT > 0 ROLLBACK TRAN;
-    INSERT INTO #TestResults (TestCase, Title, Expectation, Outcome, DurationMs, MaxDurationMs, ErrorNumber, ErrorMessage)
-    VALUES ('TC112', 'ParentProcessInstanceID = NULL', 'SUCCESS', 'SUCCESS', DATEDIFF(ms, @t0, SYSDATETIME()), NULL, NULL, NULL);
-END TRY
-BEGIN CATCH
-    IF @@TRANCOUNT > 0 ROLLBACK TRAN;
-    INSERT INTO #TestResults (TestCase, Title, Expectation, Outcome, DurationMs, MaxDurationMs, ErrorNumber, ErrorMessage)
-    VALUES ('TC112', 'ParentProcessInstanceID = NULL', 'SUCCESS', 'ERROR', DATEDIFF(ms, @t0, SYSDATETIME()), NULL, ERROR_NUMBER(), ERROR_MESSAGE());
-END CATCH
-GO
--- ==========================================================================
--- TC120 | Combination | All filters applied together
--- Expected: Rows satisfy every filter at once. This is a subset of each single-filter case (TC060-TC062, TC070, TC075, TC080, TC085).
--- ==========================================================================
-PRINT '>> TC120 - All filters applied together';
-SELECT 'TC120' AS TestCase, 'All filters applied together' AS Title;
-DECLARE @t0 datetime2 = SYSDATETIME();
-BEGIN TRY
-    DECLARE @p2 Tag.TagModelTVP;
-    INSERT INTO @p2 VALUES (6737,N'BSP',0,366713,NULL,28,366713,5031,410129,0,NULL,'0001-01-01 00:00:00');
-    DECLARE @p9 WorkFlow.ProcessActivityFilterValueTVP;
-    INSERT INTO @p9 VALUES ($(StatusValue));
-    DECLARE @p10 WorkFlow.ProcessActivityFilterValueTVP;
-    INSERT INTO @p10 VALUES ($(PriorityValue));
-    DECLARE @p13 WorkFlow.ProcessActivityFilterValueTVP;
-    INSERT INTO @p13 VALUES ($(TypeValue));
-    DECLARE @p14 WorkFlow.ProcessActivityFilterValueTVP;
-    INSERT INTO @p14 VALUES ($(TriggerValue));
-    SET @t0 = SYSDATETIME();
-    BEGIN TRAN;
-    EXEC [WorkFlow].[uspGetProcessActivities]
-         @EndDate='$(EndDate)'
         ,@FilterTags=@p2
         ,@IsMobileEnabled=1
         ,@IsOpenActivity=1
         ,@IsChildElementTasks=0
         ,@ProcessTitle=1
+        ,@IsPersistentDataRequired=NULL
+        ,@ProcessDateFilterAppliesTo=1
+        ,@ProcessStatus=@p9
+        ,@ProcessPriorities=@p10
+        ,@IsReferenceElementTasks=0
+        ,@StartDate=NULL
+        ,@ProcessTypes=@p13
+        ,@ProcessTriggers=@p14
+        ,@UserID=285
+        ,@RoleID=346314
+        ,@ParentProcessInstanceID=0;
+    DECLARE @ms int = DATEDIFF(ms, @t0, SYSDATETIME());
+    IF @@TRANCOUNT > 0 ROLLBACK TRAN;
+    INSERT INTO #TestResults (TestCase, Title, Expectation, Outcome, DurationMs, MaxDurationMs, ErrorNumber, ErrorMessage)
+    VALUES ('TC050', 'IsMobileEnabled = 1', 'SUCCESS', 'SUCCESS', @ms, NULL, NULL, NULL);
+END TRY
+BEGIN CATCH
+    IF @@TRANCOUNT > 0 ROLLBACK TRAN;
+    INSERT INTO #TestResults (TestCase, Title, Expectation, Outcome, DurationMs, MaxDurationMs, ErrorNumber, ErrorMessage)
+    VALUES ('TC050', 'IsMobileEnabled = 1', 'SUCCESS', 'ERROR', DATEDIFF(ms, @t0, SYSDATETIME()), NULL, ERROR_NUMBER(), ERROR_MESSAGE());
+END CATCH
+GO
+-- ==========================================================================
+-- TC051 | IsMobileEnabled | IsMobileEnabled = 0
+-- Expected: Subset of TC001: SupportedClient <> 2. TC050 + TC051 processes = TC001 processes.
+-- ==========================================================================
+PRINT '>> TC051 - IsMobileEnabled = 0';
+SELECT 'TC051' AS TestCase, 'IsMobileEnabled = 0' AS Title;
+DECLARE @t0 datetime2 = SYSDATETIME();
+BEGIN TRY
+    DECLARE @p2 Tag.TagModelTVP;
+    INSERT INTO @p2 VALUES (6737,N'BSP',0,366713,NULL,28,366713,5031,410129,0,NULL,'0001-01-01 00:00:00');
+    DECLARE @p9 WorkFlow.ProcessActivityFilterValueTVP;
+    DECLARE @p10 WorkFlow.ProcessActivityFilterValueTVP;
+    DECLARE @p13 WorkFlow.ProcessActivityFilterValueTVP;
+    DECLARE @p14 WorkFlow.ProcessActivityFilterValueTVP;
+    BEGIN TRAN;
+    SET @t0 = SYSDATETIME();
+    EXEC [WorkFlow].[uspGetProcessActivities]
+         @EndDate=NULL
+        ,@FilterTags=@p2
+        ,@IsMobileEnabled=0
+        ,@IsOpenActivity=1
+        ,@IsChildElementTasks=0
+        ,@ProcessTitle=1
+        ,@IsPersistentDataRequired=NULL
+        ,@ProcessDateFilterAppliesTo=1
+        ,@ProcessStatus=@p9
+        ,@ProcessPriorities=@p10
+        ,@IsReferenceElementTasks=0
+        ,@StartDate=NULL
+        ,@ProcessTypes=@p13
+        ,@ProcessTriggers=@p14
+        ,@UserID=285
+        ,@RoleID=346314
+        ,@ParentProcessInstanceID=0;
+    DECLARE @ms int = DATEDIFF(ms, @t0, SYSDATETIME());
+    IF @@TRANCOUNT > 0 ROLLBACK TRAN;
+    INSERT INTO #TestResults (TestCase, Title, Expectation, Outcome, DurationMs, MaxDurationMs, ErrorNumber, ErrorMessage)
+    VALUES ('TC051', 'IsMobileEnabled = 0', 'SUCCESS', 'SUCCESS', @ms, NULL, NULL, NULL);
+END TRY
+BEGIN CATCH
+    IF @@TRANCOUNT > 0 ROLLBACK TRAN;
+    INSERT INTO #TestResults (TestCase, Title, Expectation, Outcome, DurationMs, MaxDurationMs, ErrorNumber, ErrorMessage)
+    VALUES ('TC051', 'IsMobileEnabled = 0', 'SUCCESS', 'ERROR', DATEDIFF(ms, @t0, SYSDATETIME()), NULL, ERROR_NUMBER(), ERROR_MESSAGE());
+END CATCH
+GO
+-- ==========================================================================
+-- TC055 | IsPersistentDataRequired | IsPersistentDataRequired = 1
+-- Expected: A 5th result set (persistent data) is returned and should hold the activities' app data. Currently it is always empty: AssociatedAppID is inserted as NULL into #ActivitiesTVP, so #ElementRootMap is empty.
+-- Suspected defect: Output 5 (persistent data) is always empty: #FilteredActivitiesTVP.AssociatedAppID is always NULL.
+-- ==========================================================================
+PRINT '>> TC055 - IsPersistentDataRequired = 1';
+SELECT 'TC055' AS TestCase, 'IsPersistentDataRequired = 1' AS Title;
+DECLARE @t0 datetime2 = SYSDATETIME();
+BEGIN TRY
+    DECLARE @p2 Tag.TagModelTVP;
+    INSERT INTO @p2 VALUES (6737,N'BSP',0,366713,NULL,28,366713,5031,410129,0,NULL,'0001-01-01 00:00:00');
+    DECLARE @p9 WorkFlow.ProcessActivityFilterValueTVP;
+    DECLARE @p10 WorkFlow.ProcessActivityFilterValueTVP;
+    DECLARE @p13 WorkFlow.ProcessActivityFilterValueTVP;
+    DECLARE @p14 WorkFlow.ProcessActivityFilterValueTVP;
+    BEGIN TRAN;
+    SET @t0 = SYSDATETIME();
+    EXEC [WorkFlow].[uspGetProcessActivities]
+         @EndDate=NULL
+        ,@FilterTags=@p2
+        ,@IsMobileEnabled=NULL
+        ,@IsOpenActivity=1
+        ,@IsChildElementTasks=0
+        ,@ProcessTitle=1
         ,@IsPersistentDataRequired=1
+        ,@ProcessDateFilterAppliesTo=1
+        ,@ProcessStatus=@p9
+        ,@ProcessPriorities=@p10
+        ,@IsReferenceElementTasks=0
+        ,@StartDate=NULL
+        ,@ProcessTypes=@p13
+        ,@ProcessTriggers=@p14
+        ,@UserID=285
+        ,@RoleID=346314
+        ,@ParentProcessInstanceID=0;
+    DECLARE @ms int = DATEDIFF(ms, @t0, SYSDATETIME());
+    IF @@TRANCOUNT > 0 ROLLBACK TRAN;
+    INSERT INTO #TestResults (TestCase, Title, Expectation, Outcome, DurationMs, MaxDurationMs, ErrorNumber, ErrorMessage)
+    VALUES ('TC055', 'IsPersistentDataRequired = 1', 'SUCCESS', 'SUCCESS', @ms, NULL, NULL, NULL);
+END TRY
+BEGIN CATCH
+    IF @@TRANCOUNT > 0 ROLLBACK TRAN;
+    INSERT INTO #TestResults (TestCase, Title, Expectation, Outcome, DurationMs, MaxDurationMs, ErrorNumber, ErrorMessage)
+    VALUES ('TC055', 'IsPersistentDataRequired = 1', 'SUCCESS', 'ERROR', DATEDIFF(ms, @t0, SYSDATETIME()), NULL, ERROR_NUMBER(), ERROR_MESSAGE());
+END CATCH
+GO
+-- ==========================================================================
+-- TC056 | IsPersistentDataRequired | IsPersistentDataRequired = 0
+-- Expected: Identical result sets to TC001 (4 result sets).
+-- ==========================================================================
+PRINT '>> TC056 - IsPersistentDataRequired = 0';
+SELECT 'TC056' AS TestCase, 'IsPersistentDataRequired = 0' AS Title;
+DECLARE @t0 datetime2 = SYSDATETIME();
+BEGIN TRY
+    DECLARE @p2 Tag.TagModelTVP;
+    INSERT INTO @p2 VALUES (6737,N'BSP',0,366713,NULL,28,366713,5031,410129,0,NULL,'0001-01-01 00:00:00');
+    DECLARE @p9 WorkFlow.ProcessActivityFilterValueTVP;
+    DECLARE @p10 WorkFlow.ProcessActivityFilterValueTVP;
+    DECLARE @p13 WorkFlow.ProcessActivityFilterValueTVP;
+    DECLARE @p14 WorkFlow.ProcessActivityFilterValueTVP;
+    BEGIN TRAN;
+    SET @t0 = SYSDATETIME();
+    EXEC [WorkFlow].[uspGetProcessActivities]
+         @EndDate=NULL
+        ,@FilterTags=@p2
+        ,@IsMobileEnabled=NULL
+        ,@IsOpenActivity=1
+        ,@IsChildElementTasks=0
+        ,@ProcessTitle=1
+        ,@IsPersistentDataRequired=0
+        ,@ProcessDateFilterAppliesTo=1
+        ,@ProcessStatus=@p9
+        ,@ProcessPriorities=@p10
+        ,@IsReferenceElementTasks=0
+        ,@StartDate=NULL
+        ,@ProcessTypes=@p13
+        ,@ProcessTriggers=@p14
+        ,@UserID=285
+        ,@RoleID=346314
+        ,@ParentProcessInstanceID=0;
+    DECLARE @ms int = DATEDIFF(ms, @t0, SYSDATETIME());
+    IF @@TRANCOUNT > 0 ROLLBACK TRAN;
+    INSERT INTO #TestResults (TestCase, Title, Expectation, Outcome, DurationMs, MaxDurationMs, ErrorNumber, ErrorMessage)
+    VALUES ('TC056', 'IsPersistentDataRequired = 0', 'SUCCESS', 'SUCCESS', @ms, NULL, NULL, NULL);
+END TRY
+BEGIN CATCH
+    IF @@TRANCOUNT > 0 ROLLBACK TRAN;
+    INSERT INTO #TestResults (TestCase, Title, Expectation, Outcome, DurationMs, MaxDurationMs, ErrorNumber, ErrorMessage)
+    VALUES ('TC056', 'IsPersistentDataRequired = 0', 'SUCCESS', 'ERROR', DATEDIFF(ms, @t0, SYSDATETIME()), NULL, ERROR_NUMBER(), ERROR_MESSAGE());
+END CATCH
+GO
+-- ==========================================================================
+-- TC060 | DateRange | StartDate only
+-- Expected: Subset of TC001: activity StartDate BETWEEN $(StartDate) AND GETDATE().
+-- ==========================================================================
+PRINT '>> TC060 - StartDate only';
+SELECT 'TC060' AS TestCase, 'StartDate only' AS Title;
+DECLARE @t0 datetime2 = SYSDATETIME();
+BEGIN TRY
+    DECLARE @p2 Tag.TagModelTVP;
+    INSERT INTO @p2 VALUES (6737,N'BSP',0,366713,NULL,28,366713,5031,410129,0,NULL,'0001-01-01 00:00:00');
+    DECLARE @p9 WorkFlow.ProcessActivityFilterValueTVP;
+    DECLARE @p10 WorkFlow.ProcessActivityFilterValueTVP;
+    DECLARE @p13 WorkFlow.ProcessActivityFilterValueTVP;
+    DECLARE @p14 WorkFlow.ProcessActivityFilterValueTVP;
+    BEGIN TRAN;
+    SET @t0 = SYSDATETIME();
+    EXEC [WorkFlow].[uspGetProcessActivities]
+         @EndDate=NULL
+        ,@FilterTags=@p2
+        ,@IsMobileEnabled=NULL
+        ,@IsOpenActivity=1
+        ,@IsChildElementTasks=0
+        ,@ProcessTitle=1
+        ,@IsPersistentDataRequired=NULL
         ,@ProcessDateFilterAppliesTo=1
         ,@ProcessStatus=@p9
         ,@ProcessPriorities=@p10
@@ -2336,9 +1479,1606 @@ BEGIN TRY
         ,@UserID=285
         ,@RoleID=346314
         ,@ParentProcessInstanceID=0;
+    DECLARE @ms int = DATEDIFF(ms, @t0, SYSDATETIME());
     IF @@TRANCOUNT > 0 ROLLBACK TRAN;
     INSERT INTO #TestResults (TestCase, Title, Expectation, Outcome, DurationMs, MaxDurationMs, ErrorNumber, ErrorMessage)
-    VALUES ('TC120', 'All filters applied together', 'SUCCESS', 'SUCCESS', DATEDIFF(ms, @t0, SYSDATETIME()), NULL, NULL, NULL);
+    VALUES ('TC060', 'StartDate only', 'SUCCESS', 'SUCCESS', @ms, NULL, NULL, NULL);
+END TRY
+BEGIN CATCH
+    IF @@TRANCOUNT > 0 ROLLBACK TRAN;
+    INSERT INTO #TestResults (TestCase, Title, Expectation, Outcome, DurationMs, MaxDurationMs, ErrorNumber, ErrorMessage)
+    VALUES ('TC060', 'StartDate only', 'SUCCESS', 'ERROR', DATEDIFF(ms, @t0, SYSDATETIME()), NULL, ERROR_NUMBER(), ERROR_MESSAGE());
+END CATCH
+GO
+-- ==========================================================================
+-- TC061 | DateRange | EndDate only
+-- Expected: Identical result sets to TC001: EndDate is only used when StartDate is set. A user filtering 'up to a date' gets no filtering.
+-- Suspected defect: @EndDate is ignored when @StartDate is NULL.
+-- ==========================================================================
+PRINT '>> TC061 - EndDate only';
+SELECT 'TC061' AS TestCase, 'EndDate only' AS Title;
+DECLARE @t0 datetime2 = SYSDATETIME();
+BEGIN TRY
+    DECLARE @p2 Tag.TagModelTVP;
+    INSERT INTO @p2 VALUES (6737,N'BSP',0,366713,NULL,28,366713,5031,410129,0,NULL,'0001-01-01 00:00:00');
+    DECLARE @p9 WorkFlow.ProcessActivityFilterValueTVP;
+    DECLARE @p10 WorkFlow.ProcessActivityFilterValueTVP;
+    DECLARE @p13 WorkFlow.ProcessActivityFilterValueTVP;
+    DECLARE @p14 WorkFlow.ProcessActivityFilterValueTVP;
+    BEGIN TRAN;
+    SET @t0 = SYSDATETIME();
+    EXEC [WorkFlow].[uspGetProcessActivities]
+         @EndDate='$(EndDate)'
+        ,@FilterTags=@p2
+        ,@IsMobileEnabled=NULL
+        ,@IsOpenActivity=1
+        ,@IsChildElementTasks=0
+        ,@ProcessTitle=1
+        ,@IsPersistentDataRequired=NULL
+        ,@ProcessDateFilterAppliesTo=1
+        ,@ProcessStatus=@p9
+        ,@ProcessPriorities=@p10
+        ,@IsReferenceElementTasks=0
+        ,@StartDate=NULL
+        ,@ProcessTypes=@p13
+        ,@ProcessTriggers=@p14
+        ,@UserID=285
+        ,@RoleID=346314
+        ,@ParentProcessInstanceID=0;
+    DECLARE @ms int = DATEDIFF(ms, @t0, SYSDATETIME());
+    IF @@TRANCOUNT > 0 ROLLBACK TRAN;
+    INSERT INTO #TestResults (TestCase, Title, Expectation, Outcome, DurationMs, MaxDurationMs, ErrorNumber, ErrorMessage)
+    VALUES ('TC061', 'EndDate only', 'SUCCESS', 'SUCCESS', @ms, NULL, NULL, NULL);
+END TRY
+BEGIN CATCH
+    IF @@TRANCOUNT > 0 ROLLBACK TRAN;
+    INSERT INTO #TestResults (TestCase, Title, Expectation, Outcome, DurationMs, MaxDurationMs, ErrorNumber, ErrorMessage)
+    VALUES ('TC061', 'EndDate only', 'SUCCESS', 'ERROR', DATEDIFF(ms, @t0, SYSDATETIME()), NULL, ERROR_NUMBER(), ERROR_MESSAGE());
+END CATCH
+GO
+-- ==========================================================================
+-- TC062 | DateRange | StartDate and EndDate
+-- Expected: Activity StartDate BETWEEN $(StartDate) AND $(EndDate). Subset of TC060.
+-- ==========================================================================
+PRINT '>> TC062 - StartDate and EndDate';
+SELECT 'TC062' AS TestCase, 'StartDate and EndDate' AS Title;
+DECLARE @t0 datetime2 = SYSDATETIME();
+BEGIN TRY
+    DECLARE @p2 Tag.TagModelTVP;
+    INSERT INTO @p2 VALUES (6737,N'BSP',0,366713,NULL,28,366713,5031,410129,0,NULL,'0001-01-01 00:00:00');
+    DECLARE @p9 WorkFlow.ProcessActivityFilterValueTVP;
+    DECLARE @p10 WorkFlow.ProcessActivityFilterValueTVP;
+    DECLARE @p13 WorkFlow.ProcessActivityFilterValueTVP;
+    DECLARE @p14 WorkFlow.ProcessActivityFilterValueTVP;
+    BEGIN TRAN;
+    SET @t0 = SYSDATETIME();
+    EXEC [WorkFlow].[uspGetProcessActivities]
+         @EndDate='$(EndDate)'
+        ,@FilterTags=@p2
+        ,@IsMobileEnabled=NULL
+        ,@IsOpenActivity=1
+        ,@IsChildElementTasks=0
+        ,@ProcessTitle=1
+        ,@IsPersistentDataRequired=NULL
+        ,@ProcessDateFilterAppliesTo=1
+        ,@ProcessStatus=@p9
+        ,@ProcessPriorities=@p10
+        ,@IsReferenceElementTasks=0
+        ,@StartDate='$(StartDate)'
+        ,@ProcessTypes=@p13
+        ,@ProcessTriggers=@p14
+        ,@UserID=285
+        ,@RoleID=346314
+        ,@ParentProcessInstanceID=0;
+    DECLARE @ms int = DATEDIFF(ms, @t0, SYSDATETIME());
+    IF @@TRANCOUNT > 0 ROLLBACK TRAN;
+    INSERT INTO #TestResults (TestCase, Title, Expectation, Outcome, DurationMs, MaxDurationMs, ErrorNumber, ErrorMessage)
+    VALUES ('TC062', 'StartDate and EndDate', 'SUCCESS', 'SUCCESS', @ms, NULL, NULL, NULL);
+END TRY
+BEGIN CATCH
+    IF @@TRANCOUNT > 0 ROLLBACK TRAN;
+    INSERT INTO #TestResults (TestCase, Title, Expectation, Outcome, DurationMs, MaxDurationMs, ErrorNumber, ErrorMessage)
+    VALUES ('TC062', 'StartDate and EndDate', 'SUCCESS', 'ERROR', DATEDIFF(ms, @t0, SYSDATETIME()), NULL, ERROR_NUMBER(), ERROR_MESSAGE());
+END CATCH
+GO
+-- ==========================================================================
+-- TC063 | DateRange | StartDate later than EndDate
+-- Expected: No error. Sets (1), (2) and (4) are empty (BETWEEN with an inverted range matches nothing).
+-- ==========================================================================
+PRINT '>> TC063 - StartDate later than EndDate';
+SELECT 'TC063' AS TestCase, 'StartDate later than EndDate' AS Title;
+DECLARE @t0 datetime2 = SYSDATETIME();
+BEGIN TRY
+    DECLARE @p2 Tag.TagModelTVP;
+    INSERT INTO @p2 VALUES (6737,N'BSP',0,366713,NULL,28,366713,5031,410129,0,NULL,'0001-01-01 00:00:00');
+    DECLARE @p9 WorkFlow.ProcessActivityFilterValueTVP;
+    DECLARE @p10 WorkFlow.ProcessActivityFilterValueTVP;
+    DECLARE @p13 WorkFlow.ProcessActivityFilterValueTVP;
+    DECLARE @p14 WorkFlow.ProcessActivityFilterValueTVP;
+    BEGIN TRAN;
+    SET @t0 = SYSDATETIME();
+    EXEC [WorkFlow].[uspGetProcessActivities]
+         @EndDate='$(StartDate)'
+        ,@FilterTags=@p2
+        ,@IsMobileEnabled=NULL
+        ,@IsOpenActivity=1
+        ,@IsChildElementTasks=0
+        ,@ProcessTitle=1
+        ,@IsPersistentDataRequired=NULL
+        ,@ProcessDateFilterAppliesTo=1
+        ,@ProcessStatus=@p9
+        ,@ProcessPriorities=@p10
+        ,@IsReferenceElementTasks=0
+        ,@StartDate='$(EndDate)'
+        ,@ProcessTypes=@p13
+        ,@ProcessTriggers=@p14
+        ,@UserID=285
+        ,@RoleID=346314
+        ,@ParentProcessInstanceID=0;
+    DECLARE @ms int = DATEDIFF(ms, @t0, SYSDATETIME());
+    IF @@TRANCOUNT > 0 ROLLBACK TRAN;
+    INSERT INTO #TestResults (TestCase, Title, Expectation, Outcome, DurationMs, MaxDurationMs, ErrorNumber, ErrorMessage)
+    VALUES ('TC063', 'StartDate later than EndDate', 'SUCCESS', 'SUCCESS', @ms, NULL, NULL, NULL);
+END TRY
+BEGIN CATCH
+    IF @@TRANCOUNT > 0 ROLLBACK TRAN;
+    INSERT INTO #TestResults (TestCase, Title, Expectation, Outcome, DurationMs, MaxDurationMs, ErrorNumber, ErrorMessage)
+    VALUES ('TC063', 'StartDate later than EndDate', 'SUCCESS', 'ERROR', DATEDIFF(ms, @t0, SYSDATETIME()), NULL, ERROR_NUMBER(), ERROR_MESSAGE());
+END CATCH
+GO
+-- ==========================================================================
+-- TC064 | DateRange | StartDate = EndDate (date only, single day)
+-- Expected: Should return activities started on that day. Actually returns only activities starting exactly at 00:00:00, because the DATETIME2 BETWEEN uses midnight as the end. If the application sends date-only values, same-day searches miss data.
+-- Suspected defect: Date-only @EndDate excludes the rest of that day (BETWEEN on DATETIME2 with a midnight upper bound).
+-- ==========================================================================
+PRINT '>> TC064 - StartDate = EndDate (date only, single day)';
+SELECT 'TC064' AS TestCase, 'StartDate = EndDate (date only, single day)' AS Title;
+DECLARE @t0 datetime2 = SYSDATETIME();
+BEGIN TRY
+    DECLARE @p2 Tag.TagModelTVP;
+    INSERT INTO @p2 VALUES (6737,N'BSP',0,366713,NULL,28,366713,5031,410129,0,NULL,'0001-01-01 00:00:00');
+    DECLARE @p9 WorkFlow.ProcessActivityFilterValueTVP;
+    DECLARE @p10 WorkFlow.ProcessActivityFilterValueTVP;
+    DECLARE @p13 WorkFlow.ProcessActivityFilterValueTVP;
+    DECLARE @p14 WorkFlow.ProcessActivityFilterValueTVP;
+    BEGIN TRAN;
+    SET @t0 = SYSDATETIME();
+    EXEC [WorkFlow].[uspGetProcessActivities]
+         @EndDate='$(StartDate)'
+        ,@FilterTags=@p2
+        ,@IsMobileEnabled=NULL
+        ,@IsOpenActivity=1
+        ,@IsChildElementTasks=0
+        ,@ProcessTitle=1
+        ,@IsPersistentDataRequired=NULL
+        ,@ProcessDateFilterAppliesTo=1
+        ,@ProcessStatus=@p9
+        ,@ProcessPriorities=@p10
+        ,@IsReferenceElementTasks=0
+        ,@StartDate='$(StartDate)'
+        ,@ProcessTypes=@p13
+        ,@ProcessTriggers=@p14
+        ,@UserID=285
+        ,@RoleID=346314
+        ,@ParentProcessInstanceID=0;
+    DECLARE @ms int = DATEDIFF(ms, @t0, SYSDATETIME());
+    IF @@TRANCOUNT > 0 ROLLBACK TRAN;
+    INSERT INTO #TestResults (TestCase, Title, Expectation, Outcome, DurationMs, MaxDurationMs, ErrorNumber, ErrorMessage)
+    VALUES ('TC064', 'StartDate = EndDate (date only, single day)', 'SUCCESS', 'SUCCESS', @ms, NULL, NULL, NULL);
+END TRY
+BEGIN CATCH
+    IF @@TRANCOUNT > 0 ROLLBACK TRAN;
+    INSERT INTO #TestResults (TestCase, Title, Expectation, Outcome, DurationMs, MaxDurationMs, ErrorNumber, ErrorMessage)
+    VALUES ('TC064', 'StartDate = EndDate (date only, single day)', 'SUCCESS', 'ERROR', DATEDIFF(ms, @t0, SYSDATETIME()), NULL, ERROR_NUMBER(), ERROR_MESSAGE());
+END CATCH
+GO
+-- ==========================================================================
+-- TC065 | DateRange | StartDate in the future, EndDate NULL
+-- Expected: No error. Empty: BETWEEN '2099-01-01' AND GETDATE() is an inverted range.
+-- ==========================================================================
+PRINT '>> TC065 - StartDate in the future, EndDate NULL';
+SELECT 'TC065' AS TestCase, 'StartDate in the future, EndDate NULL' AS Title;
+DECLARE @t0 datetime2 = SYSDATETIME();
+BEGIN TRY
+    DECLARE @p2 Tag.TagModelTVP;
+    INSERT INTO @p2 VALUES (6737,N'BSP',0,366713,NULL,28,366713,5031,410129,0,NULL,'0001-01-01 00:00:00');
+    DECLARE @p9 WorkFlow.ProcessActivityFilterValueTVP;
+    DECLARE @p10 WorkFlow.ProcessActivityFilterValueTVP;
+    DECLARE @p13 WorkFlow.ProcessActivityFilterValueTVP;
+    DECLARE @p14 WorkFlow.ProcessActivityFilterValueTVP;
+    BEGIN TRAN;
+    SET @t0 = SYSDATETIME();
+    EXEC [WorkFlow].[uspGetProcessActivities]
+         @EndDate=NULL
+        ,@FilterTags=@p2
+        ,@IsMobileEnabled=NULL
+        ,@IsOpenActivity=1
+        ,@IsChildElementTasks=0
+        ,@ProcessTitle=1
+        ,@IsPersistentDataRequired=NULL
+        ,@ProcessDateFilterAppliesTo=1
+        ,@ProcessStatus=@p9
+        ,@ProcessPriorities=@p10
+        ,@IsReferenceElementTasks=0
+        ,@StartDate='2099-01-01'
+        ,@ProcessTypes=@p13
+        ,@ProcessTriggers=@p14
+        ,@UserID=285
+        ,@RoleID=346314
+        ,@ParentProcessInstanceID=0;
+    DECLARE @ms int = DATEDIFF(ms, @t0, SYSDATETIME());
+    IF @@TRANCOUNT > 0 ROLLBACK TRAN;
+    INSERT INTO #TestResults (TestCase, Title, Expectation, Outcome, DurationMs, MaxDurationMs, ErrorNumber, ErrorMessage)
+    VALUES ('TC065', 'StartDate in the future, EndDate NULL', 'SUCCESS', 'SUCCESS', @ms, NULL, NULL, NULL);
+END TRY
+BEGIN CATCH
+    IF @@TRANCOUNT > 0 ROLLBACK TRAN;
+    INSERT INTO #TestResults (TestCase, Title, Expectation, Outcome, DurationMs, MaxDurationMs, ErrorNumber, ErrorMessage)
+    VALUES ('TC065', 'StartDate in the future, EndDate NULL', 'SUCCESS', 'ERROR', DATEDIFF(ms, @t0, SYSDATETIME()), NULL, ERROR_NUMBER(), ERROR_MESSAGE());
+END CATCH
+GO
+-- ==========================================================================
+-- TC066 | DateRange | Widest range (1900-01-01 to 9999-12-31)
+-- Expected: Identical result sets to TC001. No overflow.
+-- ==========================================================================
+PRINT '>> TC066 - Widest range (1900-01-01 to 9999-12-31)';
+SELECT 'TC066' AS TestCase, 'Widest range (1900-01-01 to 9999-12-31)' AS Title;
+DECLARE @t0 datetime2 = SYSDATETIME();
+BEGIN TRY
+    DECLARE @p2 Tag.TagModelTVP;
+    INSERT INTO @p2 VALUES (6737,N'BSP',0,366713,NULL,28,366713,5031,410129,0,NULL,'0001-01-01 00:00:00');
+    DECLARE @p9 WorkFlow.ProcessActivityFilterValueTVP;
+    DECLARE @p10 WorkFlow.ProcessActivityFilterValueTVP;
+    DECLARE @p13 WorkFlow.ProcessActivityFilterValueTVP;
+    DECLARE @p14 WorkFlow.ProcessActivityFilterValueTVP;
+    BEGIN TRAN;
+    SET @t0 = SYSDATETIME();
+    EXEC [WorkFlow].[uspGetProcessActivities]
+         @EndDate='9999-12-31'
+        ,@FilterTags=@p2
+        ,@IsMobileEnabled=NULL
+        ,@IsOpenActivity=1
+        ,@IsChildElementTasks=0
+        ,@ProcessTitle=1
+        ,@IsPersistentDataRequired=NULL
+        ,@ProcessDateFilterAppliesTo=1
+        ,@ProcessStatus=@p9
+        ,@ProcessPriorities=@p10
+        ,@IsReferenceElementTasks=0
+        ,@StartDate='1900-01-01'
+        ,@ProcessTypes=@p13
+        ,@ProcessTriggers=@p14
+        ,@UserID=285
+        ,@RoleID=346314
+        ,@ParentProcessInstanceID=0;
+    DECLARE @ms int = DATEDIFF(ms, @t0, SYSDATETIME());
+    IF @@TRANCOUNT > 0 ROLLBACK TRAN;
+    INSERT INTO #TestResults (TestCase, Title, Expectation, Outcome, DurationMs, MaxDurationMs, ErrorNumber, ErrorMessage)
+    VALUES ('TC066', 'Widest range (1900-01-01 to 9999-12-31)', 'SUCCESS', 'SUCCESS', @ms, NULL, NULL, NULL);
+END TRY
+BEGIN CATCH
+    IF @@TRANCOUNT > 0 ROLLBACK TRAN;
+    INSERT INTO #TestResults (TestCase, Title, Expectation, Outcome, DurationMs, MaxDurationMs, ErrorNumber, ErrorMessage)
+    VALUES ('TC066', 'Widest range (1900-01-01 to 9999-12-31)', 'SUCCESS', 'ERROR', DATEDIFF(ms, @t0, SYSDATETIME()), NULL, ERROR_NUMBER(), ERROR_MESSAGE());
+END CATCH
+GO
+-- ==========================================================================
+-- TC067 | DateRange | ProcessDateFilterAppliesTo = 2 with range
+-- Expected: Same rows as TC062: the parameter is not used ('TODO' in the code). Activity StartDate is always the filtered column.
+-- Suspected defect: @ProcessDateFilterAppliesTo is not implemented; every value filters on activity StartDate.
+-- ==========================================================================
+PRINT '>> TC067 - ProcessDateFilterAppliesTo = 2 with range';
+SELECT 'TC067' AS TestCase, 'ProcessDateFilterAppliesTo = 2 with range' AS Title;
+DECLARE @t0 datetime2 = SYSDATETIME();
+BEGIN TRY
+    DECLARE @p2 Tag.TagModelTVP;
+    INSERT INTO @p2 VALUES (6737,N'BSP',0,366713,NULL,28,366713,5031,410129,0,NULL,'0001-01-01 00:00:00');
+    DECLARE @p9 WorkFlow.ProcessActivityFilterValueTVP;
+    DECLARE @p10 WorkFlow.ProcessActivityFilterValueTVP;
+    DECLARE @p13 WorkFlow.ProcessActivityFilterValueTVP;
+    DECLARE @p14 WorkFlow.ProcessActivityFilterValueTVP;
+    BEGIN TRAN;
+    SET @t0 = SYSDATETIME();
+    EXEC [WorkFlow].[uspGetProcessActivities]
+         @EndDate='$(EndDate)'
+        ,@FilterTags=@p2
+        ,@IsMobileEnabled=NULL
+        ,@IsOpenActivity=1
+        ,@IsChildElementTasks=0
+        ,@ProcessTitle=1
+        ,@IsPersistentDataRequired=NULL
+        ,@ProcessDateFilterAppliesTo=2
+        ,@ProcessStatus=@p9
+        ,@ProcessPriorities=@p10
+        ,@IsReferenceElementTasks=0
+        ,@StartDate='$(StartDate)'
+        ,@ProcessTypes=@p13
+        ,@ProcessTriggers=@p14
+        ,@UserID=285
+        ,@RoleID=346314
+        ,@ParentProcessInstanceID=0;
+    DECLARE @ms int = DATEDIFF(ms, @t0, SYSDATETIME());
+    IF @@TRANCOUNT > 0 ROLLBACK TRAN;
+    INSERT INTO #TestResults (TestCase, Title, Expectation, Outcome, DurationMs, MaxDurationMs, ErrorNumber, ErrorMessage)
+    VALUES ('TC067', 'ProcessDateFilterAppliesTo = 2 with range', 'SUCCESS', 'SUCCESS', @ms, NULL, NULL, NULL);
+END TRY
+BEGIN CATCH
+    IF @@TRANCOUNT > 0 ROLLBACK TRAN;
+    INSERT INTO #TestResults (TestCase, Title, Expectation, Outcome, DurationMs, MaxDurationMs, ErrorNumber, ErrorMessage)
+    VALUES ('TC067', 'ProcessDateFilterAppliesTo = 2 with range', 'SUCCESS', 'ERROR', DATEDIFF(ms, @t0, SYSDATETIME()), NULL, ERROR_NUMBER(), ERROR_MESSAGE());
+END CATCH
+GO
+-- ==========================================================================
+-- TC068 | DateRange | ProcessDateFilterAppliesTo = 99 (invalid) with range
+-- Expected: Same rows as TC062. No validation.
+-- ==========================================================================
+PRINT '>> TC068 - ProcessDateFilterAppliesTo = 99 (invalid) with range';
+SELECT 'TC068' AS TestCase, 'ProcessDateFilterAppliesTo = 99 (invalid) with range' AS Title;
+DECLARE @t0 datetime2 = SYSDATETIME();
+BEGIN TRY
+    DECLARE @p2 Tag.TagModelTVP;
+    INSERT INTO @p2 VALUES (6737,N'BSP',0,366713,NULL,28,366713,5031,410129,0,NULL,'0001-01-01 00:00:00');
+    DECLARE @p9 WorkFlow.ProcessActivityFilterValueTVP;
+    DECLARE @p10 WorkFlow.ProcessActivityFilterValueTVP;
+    DECLARE @p13 WorkFlow.ProcessActivityFilterValueTVP;
+    DECLARE @p14 WorkFlow.ProcessActivityFilterValueTVP;
+    BEGIN TRAN;
+    SET @t0 = SYSDATETIME();
+    EXEC [WorkFlow].[uspGetProcessActivities]
+         @EndDate='$(EndDate)'
+        ,@FilterTags=@p2
+        ,@IsMobileEnabled=NULL
+        ,@IsOpenActivity=1
+        ,@IsChildElementTasks=0
+        ,@ProcessTitle=1
+        ,@IsPersistentDataRequired=NULL
+        ,@ProcessDateFilterAppliesTo=99
+        ,@ProcessStatus=@p9
+        ,@ProcessPriorities=@p10
+        ,@IsReferenceElementTasks=0
+        ,@StartDate='$(StartDate)'
+        ,@ProcessTypes=@p13
+        ,@ProcessTriggers=@p14
+        ,@UserID=285
+        ,@RoleID=346314
+        ,@ParentProcessInstanceID=0;
+    DECLARE @ms int = DATEDIFF(ms, @t0, SYSDATETIME());
+    IF @@TRANCOUNT > 0 ROLLBACK TRAN;
+    INSERT INTO #TestResults (TestCase, Title, Expectation, Outcome, DurationMs, MaxDurationMs, ErrorNumber, ErrorMessage)
+    VALUES ('TC068', 'ProcessDateFilterAppliesTo = 99 (invalid) with range', 'SUCCESS', 'SUCCESS', @ms, NULL, NULL, NULL);
+END TRY
+BEGIN CATCH
+    IF @@TRANCOUNT > 0 ROLLBACK TRAN;
+    INSERT INTO #TestResults (TestCase, Title, Expectation, Outcome, DurationMs, MaxDurationMs, ErrorNumber, ErrorMessage)
+    VALUES ('TC068', 'ProcessDateFilterAppliesTo = 99 (invalid) with range', 'SUCCESS', 'ERROR', DATEDIFF(ms, @t0, SYSDATETIME()), NULL, ERROR_NUMBER(), ERROR_MESSAGE());
+END CATCH
+GO
+-- ==========================================================================
+-- TC069 | DateRange | ProcessDateFilterAppliesTo = NULL with range
+-- Expected: Same rows as TC062.
+-- ==========================================================================
+PRINT '>> TC069 - ProcessDateFilterAppliesTo = NULL with range';
+SELECT 'TC069' AS TestCase, 'ProcessDateFilterAppliesTo = NULL with range' AS Title;
+DECLARE @t0 datetime2 = SYSDATETIME();
+BEGIN TRY
+    DECLARE @p2 Tag.TagModelTVP;
+    INSERT INTO @p2 VALUES (6737,N'BSP',0,366713,NULL,28,366713,5031,410129,0,NULL,'0001-01-01 00:00:00');
+    DECLARE @p9 WorkFlow.ProcessActivityFilterValueTVP;
+    DECLARE @p10 WorkFlow.ProcessActivityFilterValueTVP;
+    DECLARE @p13 WorkFlow.ProcessActivityFilterValueTVP;
+    DECLARE @p14 WorkFlow.ProcessActivityFilterValueTVP;
+    BEGIN TRAN;
+    SET @t0 = SYSDATETIME();
+    EXEC [WorkFlow].[uspGetProcessActivities]
+         @EndDate='$(EndDate)'
+        ,@FilterTags=@p2
+        ,@IsMobileEnabled=NULL
+        ,@IsOpenActivity=1
+        ,@IsChildElementTasks=0
+        ,@ProcessTitle=1
+        ,@IsPersistentDataRequired=NULL
+        ,@ProcessDateFilterAppliesTo=NULL
+        ,@ProcessStatus=@p9
+        ,@ProcessPriorities=@p10
+        ,@IsReferenceElementTasks=0
+        ,@StartDate='$(StartDate)'
+        ,@ProcessTypes=@p13
+        ,@ProcessTriggers=@p14
+        ,@UserID=285
+        ,@RoleID=346314
+        ,@ParentProcessInstanceID=0;
+    DECLARE @ms int = DATEDIFF(ms, @t0, SYSDATETIME());
+    IF @@TRANCOUNT > 0 ROLLBACK TRAN;
+    INSERT INTO #TestResults (TestCase, Title, Expectation, Outcome, DurationMs, MaxDurationMs, ErrorNumber, ErrorMessage)
+    VALUES ('TC069', 'ProcessDateFilterAppliesTo = NULL with range', 'SUCCESS', 'SUCCESS', @ms, NULL, NULL, NULL);
+END TRY
+BEGIN CATCH
+    IF @@TRANCOUNT > 0 ROLLBACK TRAN;
+    INSERT INTO #TestResults (TestCase, Title, Expectation, Outcome, DurationMs, MaxDurationMs, ErrorNumber, ErrorMessage)
+    VALUES ('TC069', 'ProcessDateFilterAppliesTo = NULL with range', 'SUCCESS', 'ERROR', DATEDIFF(ms, @t0, SYSDATETIME()), NULL, ERROR_NUMBER(), ERROR_MESSAGE());
+END CATCH
+GO
+-- ==========================================================================
+-- TC070 | ProcessStatus | @ProcessStatus with one value
+-- Expected: Identical result sets to TC001: @ProcessStatus is not used (the code says the SLA check is done in C#).
+-- Suspected defect: @ProcessStatus is accepted but ignored.
+-- ==========================================================================
+PRINT '>> TC070 - @ProcessStatus with one value';
+SELECT 'TC070' AS TestCase, '@ProcessStatus with one value' AS Title;
+DECLARE @t0 datetime2 = SYSDATETIME();
+BEGIN TRY
+    DECLARE @p2 Tag.TagModelTVP;
+    INSERT INTO @p2 VALUES (6737,N'BSP',0,366713,NULL,28,366713,5031,410129,0,NULL,'0001-01-01 00:00:00');
+    DECLARE @p9 WorkFlow.ProcessActivityFilterValueTVP;
+    INSERT INTO @p9 (Value) VALUES ($(StatusValue));
+    DECLARE @p10 WorkFlow.ProcessActivityFilterValueTVP;
+    DECLARE @p13 WorkFlow.ProcessActivityFilterValueTVP;
+    DECLARE @p14 WorkFlow.ProcessActivityFilterValueTVP;
+    BEGIN TRAN;
+    SET @t0 = SYSDATETIME();
+    EXEC [WorkFlow].[uspGetProcessActivities]
+         @EndDate=NULL
+        ,@FilterTags=@p2
+        ,@IsMobileEnabled=NULL
+        ,@IsOpenActivity=1
+        ,@IsChildElementTasks=0
+        ,@ProcessTitle=1
+        ,@IsPersistentDataRequired=NULL
+        ,@ProcessDateFilterAppliesTo=1
+        ,@ProcessStatus=@p9
+        ,@ProcessPriorities=@p10
+        ,@IsReferenceElementTasks=0
+        ,@StartDate=NULL
+        ,@ProcessTypes=@p13
+        ,@ProcessTriggers=@p14
+        ,@UserID=285
+        ,@RoleID=346314
+        ,@ParentProcessInstanceID=0;
+    DECLARE @ms int = DATEDIFF(ms, @t0, SYSDATETIME());
+    IF @@TRANCOUNT > 0 ROLLBACK TRAN;
+    INSERT INTO #TestResults (TestCase, Title, Expectation, Outcome, DurationMs, MaxDurationMs, ErrorNumber, ErrorMessage)
+    VALUES ('TC070', '@ProcessStatus with one value', 'SUCCESS', 'SUCCESS', @ms, NULL, NULL, NULL);
+END TRY
+BEGIN CATCH
+    IF @@TRANCOUNT > 0 ROLLBACK TRAN;
+    INSERT INTO #TestResults (TestCase, Title, Expectation, Outcome, DurationMs, MaxDurationMs, ErrorNumber, ErrorMessage)
+    VALUES ('TC070', '@ProcessStatus with one value', 'SUCCESS', 'ERROR', DATEDIFF(ms, @t0, SYSDATETIME()), NULL, ERROR_NUMBER(), ERROR_MESSAGE());
+END CATCH
+GO
+-- ==========================================================================
+-- TC071 | ProcessStatus | @ProcessStatus with non-existent value (-1)
+-- Expected: Identical result sets to TC001 (parameter ignored).
+-- ==========================================================================
+PRINT '>> TC071 - @ProcessStatus with non-existent value (-1)';
+SELECT 'TC071' AS TestCase, '@ProcessStatus with non-existent value (-1)' AS Title;
+DECLARE @t0 datetime2 = SYSDATETIME();
+BEGIN TRY
+    DECLARE @p2 Tag.TagModelTVP;
+    INSERT INTO @p2 VALUES (6737,N'BSP',0,366713,NULL,28,366713,5031,410129,0,NULL,'0001-01-01 00:00:00');
+    DECLARE @p9 WorkFlow.ProcessActivityFilterValueTVP;
+    INSERT INTO @p9 (Value) VALUES (-1);
+    DECLARE @p10 WorkFlow.ProcessActivityFilterValueTVP;
+    DECLARE @p13 WorkFlow.ProcessActivityFilterValueTVP;
+    DECLARE @p14 WorkFlow.ProcessActivityFilterValueTVP;
+    BEGIN TRAN;
+    SET @t0 = SYSDATETIME();
+    EXEC [WorkFlow].[uspGetProcessActivities]
+         @EndDate=NULL
+        ,@FilterTags=@p2
+        ,@IsMobileEnabled=NULL
+        ,@IsOpenActivity=1
+        ,@IsChildElementTasks=0
+        ,@ProcessTitle=1
+        ,@IsPersistentDataRequired=NULL
+        ,@ProcessDateFilterAppliesTo=1
+        ,@ProcessStatus=@p9
+        ,@ProcessPriorities=@p10
+        ,@IsReferenceElementTasks=0
+        ,@StartDate=NULL
+        ,@ProcessTypes=@p13
+        ,@ProcessTriggers=@p14
+        ,@UserID=285
+        ,@RoleID=346314
+        ,@ParentProcessInstanceID=0;
+    DECLARE @ms int = DATEDIFF(ms, @t0, SYSDATETIME());
+    IF @@TRANCOUNT > 0 ROLLBACK TRAN;
+    INSERT INTO #TestResults (TestCase, Title, Expectation, Outcome, DurationMs, MaxDurationMs, ErrorNumber, ErrorMessage)
+    VALUES ('TC071', '@ProcessStatus with non-existent value (-1)', 'SUCCESS', 'SUCCESS', @ms, NULL, NULL, NULL);
+END TRY
+BEGIN CATCH
+    IF @@TRANCOUNT > 0 ROLLBACK TRAN;
+    INSERT INTO #TestResults (TestCase, Title, Expectation, Outcome, DurationMs, MaxDurationMs, ErrorNumber, ErrorMessage)
+    VALUES ('TC071', '@ProcessStatus with non-existent value (-1)', 'SUCCESS', 'ERROR', DATEDIFF(ms, @t0, SYSDATETIME()), NULL, ERROR_NUMBER(), ERROR_MESSAGE());
+END CATCH
+GO
+-- ==========================================================================
+-- TC075 | ProcessTriggers | @ProcessTriggers with one value
+-- Expected: Subset of TC001: processes with TriggerSource = $(TriggerValue), plus processes whose TriggerSource is NULL.
+-- ==========================================================================
+PRINT '>> TC075 - @ProcessTriggers with one value';
+SELECT 'TC075' AS TestCase, '@ProcessTriggers with one value' AS Title;
+DECLARE @t0 datetime2 = SYSDATETIME();
+BEGIN TRY
+    DECLARE @p2 Tag.TagModelTVP;
+    INSERT INTO @p2 VALUES (6737,N'BSP',0,366713,NULL,28,366713,5031,410129,0,NULL,'0001-01-01 00:00:00');
+    DECLARE @p9 WorkFlow.ProcessActivityFilterValueTVP;
+    DECLARE @p10 WorkFlow.ProcessActivityFilterValueTVP;
+    DECLARE @p13 WorkFlow.ProcessActivityFilterValueTVP;
+    DECLARE @p14 WorkFlow.ProcessActivityFilterValueTVP;
+    INSERT INTO @p14 (Value) VALUES ($(TriggerValue));
+    BEGIN TRAN;
+    SET @t0 = SYSDATETIME();
+    EXEC [WorkFlow].[uspGetProcessActivities]
+         @EndDate=NULL
+        ,@FilterTags=@p2
+        ,@IsMobileEnabled=NULL
+        ,@IsOpenActivity=1
+        ,@IsChildElementTasks=0
+        ,@ProcessTitle=1
+        ,@IsPersistentDataRequired=NULL
+        ,@ProcessDateFilterAppliesTo=1
+        ,@ProcessStatus=@p9
+        ,@ProcessPriorities=@p10
+        ,@IsReferenceElementTasks=0
+        ,@StartDate=NULL
+        ,@ProcessTypes=@p13
+        ,@ProcessTriggers=@p14
+        ,@UserID=285
+        ,@RoleID=346314
+        ,@ParentProcessInstanceID=0;
+    DECLARE @ms int = DATEDIFF(ms, @t0, SYSDATETIME());
+    IF @@TRANCOUNT > 0 ROLLBACK TRAN;
+    INSERT INTO #TestResults (TestCase, Title, Expectation, Outcome, DurationMs, MaxDurationMs, ErrorNumber, ErrorMessage)
+    VALUES ('TC075', '@ProcessTriggers with one value', 'SUCCESS', 'SUCCESS', @ms, NULL, NULL, NULL);
+END TRY
+BEGIN CATCH
+    IF @@TRANCOUNT > 0 ROLLBACK TRAN;
+    INSERT INTO #TestResults (TestCase, Title, Expectation, Outcome, DurationMs, MaxDurationMs, ErrorNumber, ErrorMessage)
+    VALUES ('TC075', '@ProcessTriggers with one value', 'SUCCESS', 'ERROR', DATEDIFF(ms, @t0, SYSDATETIME()), NULL, ERROR_NUMBER(), ERROR_MESSAGE());
+END CATCH
+GO
+-- ==========================================================================
+-- TC076 | ProcessTriggers | @ProcessTriggers with two values
+-- Expected: TriggerSource IN ($(TriggerValue), $(AltTriggerValue)) or NULL. Rows >= TC075.
+-- ==========================================================================
+PRINT '>> TC076 - @ProcessTriggers with two values';
+SELECT 'TC076' AS TestCase, '@ProcessTriggers with two values' AS Title;
+DECLARE @t0 datetime2 = SYSDATETIME();
+BEGIN TRY
+    DECLARE @p2 Tag.TagModelTVP;
+    INSERT INTO @p2 VALUES (6737,N'BSP',0,366713,NULL,28,366713,5031,410129,0,NULL,'0001-01-01 00:00:00');
+    DECLARE @p9 WorkFlow.ProcessActivityFilterValueTVP;
+    DECLARE @p10 WorkFlow.ProcessActivityFilterValueTVP;
+    DECLARE @p13 WorkFlow.ProcessActivityFilterValueTVP;
+    DECLARE @p14 WorkFlow.ProcessActivityFilterValueTVP;
+    INSERT INTO @p14 (Value) VALUES ($(TriggerValue));
+    INSERT INTO @p14 (Value) VALUES ($(AltTriggerValue));
+    BEGIN TRAN;
+    SET @t0 = SYSDATETIME();
+    EXEC [WorkFlow].[uspGetProcessActivities]
+         @EndDate=NULL
+        ,@FilterTags=@p2
+        ,@IsMobileEnabled=NULL
+        ,@IsOpenActivity=1
+        ,@IsChildElementTasks=0
+        ,@ProcessTitle=1
+        ,@IsPersistentDataRequired=NULL
+        ,@ProcessDateFilterAppliesTo=1
+        ,@ProcessStatus=@p9
+        ,@ProcessPriorities=@p10
+        ,@IsReferenceElementTasks=0
+        ,@StartDate=NULL
+        ,@ProcessTypes=@p13
+        ,@ProcessTriggers=@p14
+        ,@UserID=285
+        ,@RoleID=346314
+        ,@ParentProcessInstanceID=0;
+    DECLARE @ms int = DATEDIFF(ms, @t0, SYSDATETIME());
+    IF @@TRANCOUNT > 0 ROLLBACK TRAN;
+    INSERT INTO #TestResults (TestCase, Title, Expectation, Outcome, DurationMs, MaxDurationMs, ErrorNumber, ErrorMessage)
+    VALUES ('TC076', '@ProcessTriggers with two values', 'SUCCESS', 'SUCCESS', @ms, NULL, NULL, NULL);
+END TRY
+BEGIN CATCH
+    IF @@TRANCOUNT > 0 ROLLBACK TRAN;
+    INSERT INTO #TestResults (TestCase, Title, Expectation, Outcome, DurationMs, MaxDurationMs, ErrorNumber, ErrorMessage)
+    VALUES ('TC076', '@ProcessTriggers with two values', 'SUCCESS', 'ERROR', DATEDIFF(ms, @t0, SYSDATETIME()), NULL, ERROR_NUMBER(), ERROR_MESSAGE());
+END CATCH
+GO
+-- ==========================================================================
+-- TC077 | ProcessTriggers | @ProcessTriggers with non-existent value (-1)
+-- Expected: Not zero rows: processes with a NULL TriggerSource always pass the filter. Confirm that NULL should be included.
+-- Suspected defect: Rows with NULL TriggerSource / ProcessType / ProcessPriority always pass those filters.
+-- ==========================================================================
+PRINT '>> TC077 - @ProcessTriggers with non-existent value (-1)';
+SELECT 'TC077' AS TestCase, '@ProcessTriggers with non-existent value (-1)' AS Title;
+DECLARE @t0 datetime2 = SYSDATETIME();
+BEGIN TRY
+    DECLARE @p2 Tag.TagModelTVP;
+    INSERT INTO @p2 VALUES (6737,N'BSP',0,366713,NULL,28,366713,5031,410129,0,NULL,'0001-01-01 00:00:00');
+    DECLARE @p9 WorkFlow.ProcessActivityFilterValueTVP;
+    DECLARE @p10 WorkFlow.ProcessActivityFilterValueTVP;
+    DECLARE @p13 WorkFlow.ProcessActivityFilterValueTVP;
+    DECLARE @p14 WorkFlow.ProcessActivityFilterValueTVP;
+    INSERT INTO @p14 (Value) VALUES (-1);
+    BEGIN TRAN;
+    SET @t0 = SYSDATETIME();
+    EXEC [WorkFlow].[uspGetProcessActivities]
+         @EndDate=NULL
+        ,@FilterTags=@p2
+        ,@IsMobileEnabled=NULL
+        ,@IsOpenActivity=1
+        ,@IsChildElementTasks=0
+        ,@ProcessTitle=1
+        ,@IsPersistentDataRequired=NULL
+        ,@ProcessDateFilterAppliesTo=1
+        ,@ProcessStatus=@p9
+        ,@ProcessPriorities=@p10
+        ,@IsReferenceElementTasks=0
+        ,@StartDate=NULL
+        ,@ProcessTypes=@p13
+        ,@ProcessTriggers=@p14
+        ,@UserID=285
+        ,@RoleID=346314
+        ,@ParentProcessInstanceID=0;
+    DECLARE @ms int = DATEDIFF(ms, @t0, SYSDATETIME());
+    IF @@TRANCOUNT > 0 ROLLBACK TRAN;
+    INSERT INTO #TestResults (TestCase, Title, Expectation, Outcome, DurationMs, MaxDurationMs, ErrorNumber, ErrorMessage)
+    VALUES ('TC077', '@ProcessTriggers with non-existent value (-1)', 'SUCCESS', 'SUCCESS', @ms, NULL, NULL, NULL);
+END TRY
+BEGIN CATCH
+    IF @@TRANCOUNT > 0 ROLLBACK TRAN;
+    INSERT INTO #TestResults (TestCase, Title, Expectation, Outcome, DurationMs, MaxDurationMs, ErrorNumber, ErrorMessage)
+    VALUES ('TC077', '@ProcessTriggers with non-existent value (-1)', 'SUCCESS', 'ERROR', DATEDIFF(ms, @t0, SYSDATETIME()), NULL, ERROR_NUMBER(), ERROR_MESSAGE());
+END CATCH
+GO
+-- ==========================================================================
+-- TC080 | ProcessTypes | @ProcessTypes with one value
+-- Expected: Subset of TC001: ProcessType = $(TypeValue) (from ProcessActionParameters, else the process attribute), or ProcessType NULL, or the tag-mapped type (see TC083).
+-- ==========================================================================
+PRINT '>> TC080 - @ProcessTypes with one value';
+SELECT 'TC080' AS TestCase, '@ProcessTypes with one value' AS Title;
+DECLARE @t0 datetime2 = SYSDATETIME();
+BEGIN TRY
+    DECLARE @p2 Tag.TagModelTVP;
+    INSERT INTO @p2 VALUES (6737,N'BSP',0,366713,NULL,28,366713,5031,410129,0,NULL,'0001-01-01 00:00:00');
+    DECLARE @p9 WorkFlow.ProcessActivityFilterValueTVP;
+    DECLARE @p10 WorkFlow.ProcessActivityFilterValueTVP;
+    DECLARE @p13 WorkFlow.ProcessActivityFilterValueTVP;
+    INSERT INTO @p13 (Value) VALUES ($(TypeValue));
+    DECLARE @p14 WorkFlow.ProcessActivityFilterValueTVP;
+    BEGIN TRAN;
+    SET @t0 = SYSDATETIME();
+    EXEC [WorkFlow].[uspGetProcessActivities]
+         @EndDate=NULL
+        ,@FilterTags=@p2
+        ,@IsMobileEnabled=NULL
+        ,@IsOpenActivity=1
+        ,@IsChildElementTasks=0
+        ,@ProcessTitle=1
+        ,@IsPersistentDataRequired=NULL
+        ,@ProcessDateFilterAppliesTo=1
+        ,@ProcessStatus=@p9
+        ,@ProcessPriorities=@p10
+        ,@IsReferenceElementTasks=0
+        ,@StartDate=NULL
+        ,@ProcessTypes=@p13
+        ,@ProcessTriggers=@p14
+        ,@UserID=285
+        ,@RoleID=346314
+        ,@ParentProcessInstanceID=0;
+    DECLARE @ms int = DATEDIFF(ms, @t0, SYSDATETIME());
+    IF @@TRANCOUNT > 0 ROLLBACK TRAN;
+    INSERT INTO #TestResults (TestCase, Title, Expectation, Outcome, DurationMs, MaxDurationMs, ErrorNumber, ErrorMessage)
+    VALUES ('TC080', '@ProcessTypes with one value', 'SUCCESS', 'SUCCESS', @ms, NULL, NULL, NULL);
+END TRY
+BEGIN CATCH
+    IF @@TRANCOUNT > 0 ROLLBACK TRAN;
+    INSERT INTO #TestResults (TestCase, Title, Expectation, Outcome, DurationMs, MaxDurationMs, ErrorNumber, ErrorMessage)
+    VALUES ('TC080', '@ProcessTypes with one value', 'SUCCESS', 'ERROR', DATEDIFF(ms, @t0, SYSDATETIME()), NULL, ERROR_NUMBER(), ERROR_MESSAGE());
+END CATCH
+GO
+-- ==========================================================================
+-- TC081 | ProcessTypes | @ProcessTypes with two values
+-- Expected: ProcessType IN ($(TypeValue), $(AltTypeValue)) or NULL. Rows >= TC080.
+-- ==========================================================================
+PRINT '>> TC081 - @ProcessTypes with two values';
+SELECT 'TC081' AS TestCase, '@ProcessTypes with two values' AS Title;
+DECLARE @t0 datetime2 = SYSDATETIME();
+BEGIN TRY
+    DECLARE @p2 Tag.TagModelTVP;
+    INSERT INTO @p2 VALUES (6737,N'BSP',0,366713,NULL,28,366713,5031,410129,0,NULL,'0001-01-01 00:00:00');
+    DECLARE @p9 WorkFlow.ProcessActivityFilterValueTVP;
+    DECLARE @p10 WorkFlow.ProcessActivityFilterValueTVP;
+    DECLARE @p13 WorkFlow.ProcessActivityFilterValueTVP;
+    INSERT INTO @p13 (Value) VALUES ($(TypeValue));
+    INSERT INTO @p13 (Value) VALUES ($(AltTypeValue));
+    DECLARE @p14 WorkFlow.ProcessActivityFilterValueTVP;
+    BEGIN TRAN;
+    SET @t0 = SYSDATETIME();
+    EXEC [WorkFlow].[uspGetProcessActivities]
+         @EndDate=NULL
+        ,@FilterTags=@p2
+        ,@IsMobileEnabled=NULL
+        ,@IsOpenActivity=1
+        ,@IsChildElementTasks=0
+        ,@ProcessTitle=1
+        ,@IsPersistentDataRequired=NULL
+        ,@ProcessDateFilterAppliesTo=1
+        ,@ProcessStatus=@p9
+        ,@ProcessPriorities=@p10
+        ,@IsReferenceElementTasks=0
+        ,@StartDate=NULL
+        ,@ProcessTypes=@p13
+        ,@ProcessTriggers=@p14
+        ,@UserID=285
+        ,@RoleID=346314
+        ,@ParentProcessInstanceID=0;
+    DECLARE @ms int = DATEDIFF(ms, @t0, SYSDATETIME());
+    IF @@TRANCOUNT > 0 ROLLBACK TRAN;
+    INSERT INTO #TestResults (TestCase, Title, Expectation, Outcome, DurationMs, MaxDurationMs, ErrorNumber, ErrorMessage)
+    VALUES ('TC081', '@ProcessTypes with two values', 'SUCCESS', 'SUCCESS', @ms, NULL, NULL, NULL);
+END TRY
+BEGIN CATCH
+    IF @@TRANCOUNT > 0 ROLLBACK TRAN;
+    INSERT INTO #TestResults (TestCase, Title, Expectation, Outcome, DurationMs, MaxDurationMs, ErrorNumber, ErrorMessage)
+    VALUES ('TC081', '@ProcessTypes with two values', 'SUCCESS', 'ERROR', DATEDIFF(ms, @t0, SYSDATETIME()), NULL, ERROR_NUMBER(), ERROR_MESSAGE());
+END CATCH
+GO
+-- ==========================================================================
+-- TC082 | ProcessTypes | @ProcessTypes with non-existent value (-1)
+-- Expected: Only processes whose ProcessType is NULL (often zero rows, because ProcessType comes from a mandatory attribute).
+-- ==========================================================================
+PRINT '>> TC082 - @ProcessTypes with non-existent value (-1)';
+SELECT 'TC082' AS TestCase, '@ProcessTypes with non-existent value (-1)' AS Title;
+DECLARE @t0 datetime2 = SYSDATETIME();
+BEGIN TRY
+    DECLARE @p2 Tag.TagModelTVP;
+    INSERT INTO @p2 VALUES (6737,N'BSP',0,366713,NULL,28,366713,5031,410129,0,NULL,'0001-01-01 00:00:00');
+    DECLARE @p9 WorkFlow.ProcessActivityFilterValueTVP;
+    DECLARE @p10 WorkFlow.ProcessActivityFilterValueTVP;
+    DECLARE @p13 WorkFlow.ProcessActivityFilterValueTVP;
+    INSERT INTO @p13 (Value) VALUES (-1);
+    DECLARE @p14 WorkFlow.ProcessActivityFilterValueTVP;
+    BEGIN TRAN;
+    SET @t0 = SYSDATETIME();
+    EXEC [WorkFlow].[uspGetProcessActivities]
+         @EndDate=NULL
+        ,@FilterTags=@p2
+        ,@IsMobileEnabled=NULL
+        ,@IsOpenActivity=1
+        ,@IsChildElementTasks=0
+        ,@ProcessTitle=1
+        ,@IsPersistentDataRequired=NULL
+        ,@ProcessDateFilterAppliesTo=1
+        ,@ProcessStatus=@p9
+        ,@ProcessPriorities=@p10
+        ,@IsReferenceElementTasks=0
+        ,@StartDate=NULL
+        ,@ProcessTypes=@p13
+        ,@ProcessTriggers=@p14
+        ,@UserID=285
+        ,@RoleID=346314
+        ,@ParentProcessInstanceID=0;
+    DECLARE @ms int = DATEDIFF(ms, @t0, SYSDATETIME());
+    IF @@TRANCOUNT > 0 ROLLBACK TRAN;
+    INSERT INTO #TestResults (TestCase, Title, Expectation, Outcome, DurationMs, MaxDurationMs, ErrorNumber, ErrorMessage)
+    VALUES ('TC082', '@ProcessTypes with non-existent value (-1)', 'SUCCESS', 'SUCCESS', @ms, NULL, NULL, NULL);
+END TRY
+BEGIN CATCH
+    IF @@TRANCOUNT > 0 ROLLBACK TRAN;
+    INSERT INTO #TestResults (TestCase, Title, Expectation, Outcome, DurationMs, MaxDurationMs, ErrorNumber, ErrorMessage)
+    VALUES ('TC082', '@ProcessTypes with non-existent value (-1)', 'SUCCESS', 'ERROR', DATEDIFF(ms, @t0, SYSDATETIME()), NULL, ERROR_NUMBER(), ERROR_MESSAGE());
+END CATCH
+GO
+-- ==========================================================================
+-- TC083 | ProcessTypes | @ProcessTypes = 5244 (FixRequest tag mapping)
+-- Expected: Includes processes with ProcessType > 20 whose process element carries tag 'FixRequest' (ElementTypeID 6263). Repeat with 5239, 5238, 5243 and 5242 for InvestigationRequest, OSW, IntegratedAssurance and IAPowerStation.
+-- ==========================================================================
+PRINT '>> TC083 - @ProcessTypes = 5244 (FixRequest tag mapping)';
+SELECT 'TC083' AS TestCase, '@ProcessTypes = 5244 (FixRequest tag mapping)' AS Title;
+DECLARE @t0 datetime2 = SYSDATETIME();
+BEGIN TRY
+    DECLARE @p2 Tag.TagModelTVP;
+    INSERT INTO @p2 VALUES (6737,N'BSP',0,366713,NULL,28,366713,5031,410129,0,NULL,'0001-01-01 00:00:00');
+    DECLARE @p9 WorkFlow.ProcessActivityFilterValueTVP;
+    DECLARE @p10 WorkFlow.ProcessActivityFilterValueTVP;
+    DECLARE @p13 WorkFlow.ProcessActivityFilterValueTVP;
+    INSERT INTO @p13 (Value) VALUES (5244);
+    DECLARE @p14 WorkFlow.ProcessActivityFilterValueTVP;
+    BEGIN TRAN;
+    SET @t0 = SYSDATETIME();
+    EXEC [WorkFlow].[uspGetProcessActivities]
+         @EndDate=NULL
+        ,@FilterTags=@p2
+        ,@IsMobileEnabled=NULL
+        ,@IsOpenActivity=1
+        ,@IsChildElementTasks=0
+        ,@ProcessTitle=1
+        ,@IsPersistentDataRequired=NULL
+        ,@ProcessDateFilterAppliesTo=1
+        ,@ProcessStatus=@p9
+        ,@ProcessPriorities=@p10
+        ,@IsReferenceElementTasks=0
+        ,@StartDate=NULL
+        ,@ProcessTypes=@p13
+        ,@ProcessTriggers=@p14
+        ,@UserID=285
+        ,@RoleID=346314
+        ,@ParentProcessInstanceID=0;
+    DECLARE @ms int = DATEDIFF(ms, @t0, SYSDATETIME());
+    IF @@TRANCOUNT > 0 ROLLBACK TRAN;
+    INSERT INTO #TestResults (TestCase, Title, Expectation, Outcome, DurationMs, MaxDurationMs, ErrorNumber, ErrorMessage)
+    VALUES ('TC083', '@ProcessTypes = 5244 (FixRequest tag mapping)', 'SUCCESS', 'SUCCESS', @ms, NULL, NULL, NULL);
+END TRY
+BEGIN CATCH
+    IF @@TRANCOUNT > 0 ROLLBACK TRAN;
+    INSERT INTO #TestResults (TestCase, Title, Expectation, Outcome, DurationMs, MaxDurationMs, ErrorNumber, ErrorMessage)
+    VALUES ('TC083', '@ProcessTypes = 5244 (FixRequest tag mapping)', 'SUCCESS', 'ERROR', DATEDIFF(ms, @t0, SYSDATETIME()), NULL, ERROR_NUMBER(), ERROR_MESSAGE());
+END CATCH
+GO
+-- ==========================================================================
+-- TC085 | ProcessPriorities | @ProcessPriorities with one value
+-- Expected: Subset of TC001: ProcessPriority = $(PriorityValue), or NULL.
+-- ==========================================================================
+PRINT '>> TC085 - @ProcessPriorities with one value';
+SELECT 'TC085' AS TestCase, '@ProcessPriorities with one value' AS Title;
+DECLARE @t0 datetime2 = SYSDATETIME();
+BEGIN TRY
+    DECLARE @p2 Tag.TagModelTVP;
+    INSERT INTO @p2 VALUES (6737,N'BSP',0,366713,NULL,28,366713,5031,410129,0,NULL,'0001-01-01 00:00:00');
+    DECLARE @p9 WorkFlow.ProcessActivityFilterValueTVP;
+    DECLARE @p10 WorkFlow.ProcessActivityFilterValueTVP;
+    INSERT INTO @p10 (Value) VALUES ($(PriorityValue));
+    DECLARE @p13 WorkFlow.ProcessActivityFilterValueTVP;
+    DECLARE @p14 WorkFlow.ProcessActivityFilterValueTVP;
+    BEGIN TRAN;
+    SET @t0 = SYSDATETIME();
+    EXEC [WorkFlow].[uspGetProcessActivities]
+         @EndDate=NULL
+        ,@FilterTags=@p2
+        ,@IsMobileEnabled=NULL
+        ,@IsOpenActivity=1
+        ,@IsChildElementTasks=0
+        ,@ProcessTitle=1
+        ,@IsPersistentDataRequired=NULL
+        ,@ProcessDateFilterAppliesTo=1
+        ,@ProcessStatus=@p9
+        ,@ProcessPriorities=@p10
+        ,@IsReferenceElementTasks=0
+        ,@StartDate=NULL
+        ,@ProcessTypes=@p13
+        ,@ProcessTriggers=@p14
+        ,@UserID=285
+        ,@RoleID=346314
+        ,@ParentProcessInstanceID=0;
+    DECLARE @ms int = DATEDIFF(ms, @t0, SYSDATETIME());
+    IF @@TRANCOUNT > 0 ROLLBACK TRAN;
+    INSERT INTO #TestResults (TestCase, Title, Expectation, Outcome, DurationMs, MaxDurationMs, ErrorNumber, ErrorMessage)
+    VALUES ('TC085', '@ProcessPriorities with one value', 'SUCCESS', 'SUCCESS', @ms, NULL, NULL, NULL);
+END TRY
+BEGIN CATCH
+    IF @@TRANCOUNT > 0 ROLLBACK TRAN;
+    INSERT INTO #TestResults (TestCase, Title, Expectation, Outcome, DurationMs, MaxDurationMs, ErrorNumber, ErrorMessage)
+    VALUES ('TC085', '@ProcessPriorities with one value', 'SUCCESS', 'ERROR', DATEDIFF(ms, @t0, SYSDATETIME()), NULL, ERROR_NUMBER(), ERROR_MESSAGE());
+END CATCH
+GO
+-- ==========================================================================
+-- TC086 | ProcessPriorities | @ProcessPriorities with two values
+-- Expected: ProcessPriority IN ($(PriorityValue), $(AltPriorityValue)) or NULL. Rows >= TC085.
+-- ==========================================================================
+PRINT '>> TC086 - @ProcessPriorities with two values';
+SELECT 'TC086' AS TestCase, '@ProcessPriorities with two values' AS Title;
+DECLARE @t0 datetime2 = SYSDATETIME();
+BEGIN TRY
+    DECLARE @p2 Tag.TagModelTVP;
+    INSERT INTO @p2 VALUES (6737,N'BSP',0,366713,NULL,28,366713,5031,410129,0,NULL,'0001-01-01 00:00:00');
+    DECLARE @p9 WorkFlow.ProcessActivityFilterValueTVP;
+    DECLARE @p10 WorkFlow.ProcessActivityFilterValueTVP;
+    INSERT INTO @p10 (Value) VALUES ($(PriorityValue));
+    INSERT INTO @p10 (Value) VALUES ($(AltPriorityValue));
+    DECLARE @p13 WorkFlow.ProcessActivityFilterValueTVP;
+    DECLARE @p14 WorkFlow.ProcessActivityFilterValueTVP;
+    BEGIN TRAN;
+    SET @t0 = SYSDATETIME();
+    EXEC [WorkFlow].[uspGetProcessActivities]
+         @EndDate=NULL
+        ,@FilterTags=@p2
+        ,@IsMobileEnabled=NULL
+        ,@IsOpenActivity=1
+        ,@IsChildElementTasks=0
+        ,@ProcessTitle=1
+        ,@IsPersistentDataRequired=NULL
+        ,@ProcessDateFilterAppliesTo=1
+        ,@ProcessStatus=@p9
+        ,@ProcessPriorities=@p10
+        ,@IsReferenceElementTasks=0
+        ,@StartDate=NULL
+        ,@ProcessTypes=@p13
+        ,@ProcessTriggers=@p14
+        ,@UserID=285
+        ,@RoleID=346314
+        ,@ParentProcessInstanceID=0;
+    DECLARE @ms int = DATEDIFF(ms, @t0, SYSDATETIME());
+    IF @@TRANCOUNT > 0 ROLLBACK TRAN;
+    INSERT INTO #TestResults (TestCase, Title, Expectation, Outcome, DurationMs, MaxDurationMs, ErrorNumber, ErrorMessage)
+    VALUES ('TC086', '@ProcessPriorities with two values', 'SUCCESS', 'SUCCESS', @ms, NULL, NULL, NULL);
+END TRY
+BEGIN CATCH
+    IF @@TRANCOUNT > 0 ROLLBACK TRAN;
+    INSERT INTO #TestResults (TestCase, Title, Expectation, Outcome, DurationMs, MaxDurationMs, ErrorNumber, ErrorMessage)
+    VALUES ('TC086', '@ProcessPriorities with two values', 'SUCCESS', 'ERROR', DATEDIFF(ms, @t0, SYSDATETIME()), NULL, ERROR_NUMBER(), ERROR_MESSAGE());
+END CATCH
+GO
+-- ==========================================================================
+-- TC087 | ProcessPriorities | @ProcessPriorities with non-existent value (-1)
+-- Expected: Only processes whose ProcessPriority is NULL (often zero rows).
+-- ==========================================================================
+PRINT '>> TC087 - @ProcessPriorities with non-existent value (-1)';
+SELECT 'TC087' AS TestCase, '@ProcessPriorities with non-existent value (-1)' AS Title;
+DECLARE @t0 datetime2 = SYSDATETIME();
+BEGIN TRY
+    DECLARE @p2 Tag.TagModelTVP;
+    INSERT INTO @p2 VALUES (6737,N'BSP',0,366713,NULL,28,366713,5031,410129,0,NULL,'0001-01-01 00:00:00');
+    DECLARE @p9 WorkFlow.ProcessActivityFilterValueTVP;
+    DECLARE @p10 WorkFlow.ProcessActivityFilterValueTVP;
+    INSERT INTO @p10 (Value) VALUES (-1);
+    DECLARE @p13 WorkFlow.ProcessActivityFilterValueTVP;
+    DECLARE @p14 WorkFlow.ProcessActivityFilterValueTVP;
+    BEGIN TRAN;
+    SET @t0 = SYSDATETIME();
+    EXEC [WorkFlow].[uspGetProcessActivities]
+         @EndDate=NULL
+        ,@FilterTags=@p2
+        ,@IsMobileEnabled=NULL
+        ,@IsOpenActivity=1
+        ,@IsChildElementTasks=0
+        ,@ProcessTitle=1
+        ,@IsPersistentDataRequired=NULL
+        ,@ProcessDateFilterAppliesTo=1
+        ,@ProcessStatus=@p9
+        ,@ProcessPriorities=@p10
+        ,@IsReferenceElementTasks=0
+        ,@StartDate=NULL
+        ,@ProcessTypes=@p13
+        ,@ProcessTriggers=@p14
+        ,@UserID=285
+        ,@RoleID=346314
+        ,@ParentProcessInstanceID=0;
+    DECLARE @ms int = DATEDIFF(ms, @t0, SYSDATETIME());
+    IF @@TRANCOUNT > 0 ROLLBACK TRAN;
+    INSERT INTO #TestResults (TestCase, Title, Expectation, Outcome, DurationMs, MaxDurationMs, ErrorNumber, ErrorMessage)
+    VALUES ('TC087', '@ProcessPriorities with non-existent value (-1)', 'SUCCESS', 'SUCCESS', @ms, NULL, NULL, NULL);
+END TRY
+BEGIN CATCH
+    IF @@TRANCOUNT > 0 ROLLBACK TRAN;
+    INSERT INTO #TestResults (TestCase, Title, Expectation, Outcome, DurationMs, MaxDurationMs, ErrorNumber, ErrorMessage)
+    VALUES ('TC087', '@ProcessPriorities with non-existent value (-1)', 'SUCCESS', 'ERROR', DATEDIFF(ms, @t0, SYSDATETIME()), NULL, ERROR_NUMBER(), ERROR_MESSAGE());
+END CATCH
+GO
+-- ==========================================================================
+-- TC090 | FilterValues | Omit all four filter-value TVP parameters
+-- Expected: Identical result sets to TC001 (omitted TVPs default to empty).
+-- ==========================================================================
+PRINT '>> TC090 - Omit all four filter-value TVP parameters';
+SELECT 'TC090' AS TestCase, 'Omit all four filter-value TVP parameters' AS Title;
+DECLARE @t0 datetime2 = SYSDATETIME();
+BEGIN TRY
+    DECLARE @p2 Tag.TagModelTVP;
+    INSERT INTO @p2 VALUES (6737,N'BSP',0,366713,NULL,28,366713,5031,410129,0,NULL,'0001-01-01 00:00:00');
+    BEGIN TRAN;
+    SET @t0 = SYSDATETIME();
+    EXEC [WorkFlow].[uspGetProcessActivities]
+         @EndDate=NULL
+        ,@FilterTags=@p2
+        ,@IsMobileEnabled=NULL
+        ,@IsOpenActivity=1
+        ,@IsChildElementTasks=0
+        ,@ProcessTitle=1
+        ,@IsPersistentDataRequired=NULL
+        ,@ProcessDateFilterAppliesTo=1
+        ,@IsReferenceElementTasks=0
+        ,@StartDate=NULL
+        ,@UserID=285
+        ,@RoleID=346314
+        ,@ParentProcessInstanceID=0;
+    DECLARE @ms int = DATEDIFF(ms, @t0, SYSDATETIME());
+    IF @@TRANCOUNT > 0 ROLLBACK TRAN;
+    INSERT INTO #TestResults (TestCase, Title, Expectation, Outcome, DurationMs, MaxDurationMs, ErrorNumber, ErrorMessage)
+    VALUES ('TC090', 'Omit all four filter-value TVP parameters', 'SUCCESS', 'SUCCESS', @ms, NULL, NULL, NULL);
+END TRY
+BEGIN CATCH
+    IF @@TRANCOUNT > 0 ROLLBACK TRAN;
+    INSERT INTO #TestResults (TestCase, Title, Expectation, Outcome, DurationMs, MaxDurationMs, ErrorNumber, ErrorMessage)
+    VALUES ('TC090', 'Omit all four filter-value TVP parameters', 'SUCCESS', 'ERROR', DATEDIFF(ms, @t0, SYSDATETIME()), NULL, ERROR_NUMBER(), ERROR_MESSAGE());
+END CATCH
+GO
+-- ==========================================================================
+-- TC100 | Security | Non-existent UserID (999999999)
+-- Expected: No error. Sets (1), (2) and (4) are empty: no role assignments and no activities executed by that user.
+-- ==========================================================================
+PRINT '>> TC100 - Non-existent UserID (999999999)';
+SELECT 'TC100' AS TestCase, 'Non-existent UserID (999999999)' AS Title;
+DECLARE @t0 datetime2 = SYSDATETIME();
+BEGIN TRY
+    DECLARE @p2 Tag.TagModelTVP;
+    INSERT INTO @p2 VALUES (6737,N'BSP',0,366713,NULL,28,366713,5031,410129,0,NULL,'0001-01-01 00:00:00');
+    DECLARE @p9 WorkFlow.ProcessActivityFilterValueTVP;
+    DECLARE @p10 WorkFlow.ProcessActivityFilterValueTVP;
+    DECLARE @p13 WorkFlow.ProcessActivityFilterValueTVP;
+    DECLARE @p14 WorkFlow.ProcessActivityFilterValueTVP;
+    BEGIN TRAN;
+    SET @t0 = SYSDATETIME();
+    EXEC [WorkFlow].[uspGetProcessActivities]
+         @EndDate=NULL
+        ,@FilterTags=@p2
+        ,@IsMobileEnabled=NULL
+        ,@IsOpenActivity=1
+        ,@IsChildElementTasks=0
+        ,@ProcessTitle=1
+        ,@IsPersistentDataRequired=NULL
+        ,@ProcessDateFilterAppliesTo=1
+        ,@ProcessStatus=@p9
+        ,@ProcessPriorities=@p10
+        ,@IsReferenceElementTasks=0
+        ,@StartDate=NULL
+        ,@ProcessTypes=@p13
+        ,@ProcessTriggers=@p14
+        ,@UserID=999999999
+        ,@RoleID=346314
+        ,@ParentProcessInstanceID=0;
+    DECLARE @ms int = DATEDIFF(ms, @t0, SYSDATETIME());
+    IF @@TRANCOUNT > 0 ROLLBACK TRAN;
+    INSERT INTO #TestResults (TestCase, Title, Expectation, Outcome, DurationMs, MaxDurationMs, ErrorNumber, ErrorMessage)
+    VALUES ('TC100', 'Non-existent UserID (999999999)', 'SUCCESS', 'SUCCESS', @ms, NULL, NULL, NULL);
+END TRY
+BEGIN CATCH
+    IF @@TRANCOUNT > 0 ROLLBACK TRAN;
+    INSERT INTO #TestResults (TestCase, Title, Expectation, Outcome, DurationMs, MaxDurationMs, ErrorNumber, ErrorMessage)
+    VALUES ('TC100', 'Non-existent UserID (999999999)', 'SUCCESS', 'ERROR', DATEDIFF(ms, @t0, SYSDATETIME()), NULL, ERROR_NUMBER(), ERROR_MESSAGE());
+END CATCH
+GO
+-- ==========================================================================
+-- TC101 | Security | UserID = NULL
+-- Expected: No error. Sets (1), (2) and (4) are empty.
+-- ==========================================================================
+PRINT '>> TC101 - UserID = NULL';
+SELECT 'TC101' AS TestCase, 'UserID = NULL' AS Title;
+DECLARE @t0 datetime2 = SYSDATETIME();
+BEGIN TRY
+    DECLARE @p2 Tag.TagModelTVP;
+    INSERT INTO @p2 VALUES (6737,N'BSP',0,366713,NULL,28,366713,5031,410129,0,NULL,'0001-01-01 00:00:00');
+    DECLARE @p9 WorkFlow.ProcessActivityFilterValueTVP;
+    DECLARE @p10 WorkFlow.ProcessActivityFilterValueTVP;
+    DECLARE @p13 WorkFlow.ProcessActivityFilterValueTVP;
+    DECLARE @p14 WorkFlow.ProcessActivityFilterValueTVP;
+    BEGIN TRAN;
+    SET @t0 = SYSDATETIME();
+    EXEC [WorkFlow].[uspGetProcessActivities]
+         @EndDate=NULL
+        ,@FilterTags=@p2
+        ,@IsMobileEnabled=NULL
+        ,@IsOpenActivity=1
+        ,@IsChildElementTasks=0
+        ,@ProcessTitle=1
+        ,@IsPersistentDataRequired=NULL
+        ,@ProcessDateFilterAppliesTo=1
+        ,@ProcessStatus=@p9
+        ,@ProcessPriorities=@p10
+        ,@IsReferenceElementTasks=0
+        ,@StartDate=NULL
+        ,@ProcessTypes=@p13
+        ,@ProcessTriggers=@p14
+        ,@UserID=NULL
+        ,@RoleID=346314
+        ,@ParentProcessInstanceID=0;
+    DECLARE @ms int = DATEDIFF(ms, @t0, SYSDATETIME());
+    IF @@TRANCOUNT > 0 ROLLBACK TRAN;
+    INSERT INTO #TestResults (TestCase, Title, Expectation, Outcome, DurationMs, MaxDurationMs, ErrorNumber, ErrorMessage)
+    VALUES ('TC101', 'UserID = NULL', 'SUCCESS', 'SUCCESS', @ms, NULL, NULL, NULL);
+END TRY
+BEGIN CATCH
+    IF @@TRANCOUNT > 0 ROLLBACK TRAN;
+    INSERT INTO #TestResults (TestCase, Title, Expectation, Outcome, DurationMs, MaxDurationMs, ErrorNumber, ErrorMessage)
+    VALUES ('TC101', 'UserID = NULL', 'SUCCESS', 'ERROR', DATEDIFF(ms, @t0, SYSDATETIME()), NULL, ERROR_NUMBER(), ERROR_MESSAGE());
+END CATCH
+GO
+-- ==========================================================================
+-- TC102 | Security | UserID = 0
+-- Expected: No error. Sets (1), (2) and (4) are empty.
+-- ==========================================================================
+PRINT '>> TC102 - UserID = 0';
+SELECT 'TC102' AS TestCase, 'UserID = 0' AS Title;
+DECLARE @t0 datetime2 = SYSDATETIME();
+BEGIN TRY
+    DECLARE @p2 Tag.TagModelTVP;
+    INSERT INTO @p2 VALUES (6737,N'BSP',0,366713,NULL,28,366713,5031,410129,0,NULL,'0001-01-01 00:00:00');
+    DECLARE @p9 WorkFlow.ProcessActivityFilterValueTVP;
+    DECLARE @p10 WorkFlow.ProcessActivityFilterValueTVP;
+    DECLARE @p13 WorkFlow.ProcessActivityFilterValueTVP;
+    DECLARE @p14 WorkFlow.ProcessActivityFilterValueTVP;
+    BEGIN TRAN;
+    SET @t0 = SYSDATETIME();
+    EXEC [WorkFlow].[uspGetProcessActivities]
+         @EndDate=NULL
+        ,@FilterTags=@p2
+        ,@IsMobileEnabled=NULL
+        ,@IsOpenActivity=1
+        ,@IsChildElementTasks=0
+        ,@ProcessTitle=1
+        ,@IsPersistentDataRequired=NULL
+        ,@ProcessDateFilterAppliesTo=1
+        ,@ProcessStatus=@p9
+        ,@ProcessPriorities=@p10
+        ,@IsReferenceElementTasks=0
+        ,@StartDate=NULL
+        ,@ProcessTypes=@p13
+        ,@ProcessTriggers=@p14
+        ,@UserID=0
+        ,@RoleID=346314
+        ,@ParentProcessInstanceID=0;
+    DECLARE @ms int = DATEDIFF(ms, @t0, SYSDATETIME());
+    IF @@TRANCOUNT > 0 ROLLBACK TRAN;
+    INSERT INTO #TestResults (TestCase, Title, Expectation, Outcome, DurationMs, MaxDurationMs, ErrorNumber, ErrorMessage)
+    VALUES ('TC102', 'UserID = 0', 'SUCCESS', 'SUCCESS', @ms, NULL, NULL, NULL);
+END TRY
+BEGIN CATCH
+    IF @@TRANCOUNT > 0 ROLLBACK TRAN;
+    INSERT INTO #TestResults (TestCase, Title, Expectation, Outcome, DurationMs, MaxDurationMs, ErrorNumber, ErrorMessage)
+    VALUES ('TC102', 'UserID = 0', 'SUCCESS', 'ERROR', DATEDIFF(ms, @t0, SYSDATETIME()), NULL, ERROR_NUMBER(), ERROR_MESSAGE());
+END CATCH
+GO
+-- ==========================================================================
+-- TC103 | Security | Non-existent RoleID with ProcessTitle = 1
+-- Expected: Identical result sets to TC001: with ProcessTitle = 1 the procedure uses every role the user holds and ignores @RoleID (it is used only for SupportedElementTypes when ProcessTitle > 1, and for the time log). Confirm that 'My Tasks' should not be scoped to the selected role.
+-- Suspected defect: @RoleID is ignored for ProcessTitle = 1; tasks are not scoped to the selected role.
+-- ==========================================================================
+PRINT '>> TC103 - Non-existent RoleID with ProcessTitle = 1';
+SELECT 'TC103' AS TestCase, 'Non-existent RoleID with ProcessTitle = 1' AS Title;
+DECLARE @t0 datetime2 = SYSDATETIME();
+BEGIN TRY
+    DECLARE @p2 Tag.TagModelTVP;
+    INSERT INTO @p2 VALUES (6737,N'BSP',0,366713,NULL,28,366713,5031,410129,0,NULL,'0001-01-01 00:00:00');
+    DECLARE @p9 WorkFlow.ProcessActivityFilterValueTVP;
+    DECLARE @p10 WorkFlow.ProcessActivityFilterValueTVP;
+    DECLARE @p13 WorkFlow.ProcessActivityFilterValueTVP;
+    DECLARE @p14 WorkFlow.ProcessActivityFilterValueTVP;
+    BEGIN TRAN;
+    SET @t0 = SYSDATETIME();
+    EXEC [WorkFlow].[uspGetProcessActivities]
+         @EndDate=NULL
+        ,@FilterTags=@p2
+        ,@IsMobileEnabled=NULL
+        ,@IsOpenActivity=1
+        ,@IsChildElementTasks=0
+        ,@ProcessTitle=1
+        ,@IsPersistentDataRequired=NULL
+        ,@ProcessDateFilterAppliesTo=1
+        ,@ProcessStatus=@p9
+        ,@ProcessPriorities=@p10
+        ,@IsReferenceElementTasks=0
+        ,@StartDate=NULL
+        ,@ProcessTypes=@p13
+        ,@ProcessTriggers=@p14
+        ,@UserID=285
+        ,@RoleID=-1
+        ,@ParentProcessInstanceID=0;
+    DECLARE @ms int = DATEDIFF(ms, @t0, SYSDATETIME());
+    IF @@TRANCOUNT > 0 ROLLBACK TRAN;
+    INSERT INTO #TestResults (TestCase, Title, Expectation, Outcome, DurationMs, MaxDurationMs, ErrorNumber, ErrorMessage)
+    VALUES ('TC103', 'Non-existent RoleID with ProcessTitle = 1', 'SUCCESS', 'SUCCESS', @ms, NULL, NULL, NULL);
+END TRY
+BEGIN CATCH
+    IF @@TRANCOUNT > 0 ROLLBACK TRAN;
+    INSERT INTO #TestResults (TestCase, Title, Expectation, Outcome, DurationMs, MaxDurationMs, ErrorNumber, ErrorMessage)
+    VALUES ('TC103', 'Non-existent RoleID with ProcessTitle = 1', 'SUCCESS', 'ERROR', DATEDIFF(ms, @t0, SYSDATETIME()), NULL, ERROR_NUMBER(), ERROR_MESSAGE());
+END CATCH
+GO
+-- ==========================================================================
+-- TC104 | Security | RoleID = NULL with ProcessTitle = 1
+-- Expected: Identical result sets to TC001.
+-- ==========================================================================
+PRINT '>> TC104 - RoleID = NULL with ProcessTitle = 1';
+SELECT 'TC104' AS TestCase, 'RoleID = NULL with ProcessTitle = 1' AS Title;
+DECLARE @t0 datetime2 = SYSDATETIME();
+BEGIN TRY
+    DECLARE @p2 Tag.TagModelTVP;
+    INSERT INTO @p2 VALUES (6737,N'BSP',0,366713,NULL,28,366713,5031,410129,0,NULL,'0001-01-01 00:00:00');
+    DECLARE @p9 WorkFlow.ProcessActivityFilterValueTVP;
+    DECLARE @p10 WorkFlow.ProcessActivityFilterValueTVP;
+    DECLARE @p13 WorkFlow.ProcessActivityFilterValueTVP;
+    DECLARE @p14 WorkFlow.ProcessActivityFilterValueTVP;
+    BEGIN TRAN;
+    SET @t0 = SYSDATETIME();
+    EXEC [WorkFlow].[uspGetProcessActivities]
+         @EndDate=NULL
+        ,@FilterTags=@p2
+        ,@IsMobileEnabled=NULL
+        ,@IsOpenActivity=1
+        ,@IsChildElementTasks=0
+        ,@ProcessTitle=1
+        ,@IsPersistentDataRequired=NULL
+        ,@ProcessDateFilterAppliesTo=1
+        ,@ProcessStatus=@p9
+        ,@ProcessPriorities=@p10
+        ,@IsReferenceElementTasks=0
+        ,@StartDate=NULL
+        ,@ProcessTypes=@p13
+        ,@ProcessTriggers=@p14
+        ,@UserID=285
+        ,@RoleID=NULL
+        ,@ParentProcessInstanceID=0;
+    DECLARE @ms int = DATEDIFF(ms, @t0, SYSDATETIME());
+    IF @@TRANCOUNT > 0 ROLLBACK TRAN;
+    INSERT INTO #TestResults (TestCase, Title, Expectation, Outcome, DurationMs, MaxDurationMs, ErrorNumber, ErrorMessage)
+    VALUES ('TC104', 'RoleID = NULL with ProcessTitle = 1', 'SUCCESS', 'SUCCESS', @ms, NULL, NULL, NULL);
+END TRY
+BEGIN CATCH
+    IF @@TRANCOUNT > 0 ROLLBACK TRAN;
+    INSERT INTO #TestResults (TestCase, Title, Expectation, Outcome, DurationMs, MaxDurationMs, ErrorNumber, ErrorMessage)
+    VALUES ('TC104', 'RoleID = NULL with ProcessTitle = 1', 'SUCCESS', 'ERROR', DATEDIFF(ms, @t0, SYSDATETIME()), NULL, ERROR_NUMBER(), ERROR_MESSAGE());
+END CATCH
+GO
+-- ==========================================================================
+-- TC105 | Security | Different (non-admin) user and role
+-- Expected: Only $(OtherUserID)'s tasks. No activity from TC001 that belongs only to 285 appears. Note: 285 is hard-coded as 'Nibras Admin' in CreatedUserName and ExecutorName.
+-- ==========================================================================
+PRINT '>> TC105 - Different (non-admin) user and role';
+SELECT 'TC105' AS TestCase, 'Different (non-admin) user and role' AS Title;
+DECLARE @t0 datetime2 = SYSDATETIME();
+BEGIN TRY
+    DECLARE @p2 Tag.TagModelTVP;
+    INSERT INTO @p2 VALUES (6737,N'BSP',0,366713,NULL,28,366713,5031,410129,0,NULL,'0001-01-01 00:00:00');
+    DECLARE @p9 WorkFlow.ProcessActivityFilterValueTVP;
+    DECLARE @p10 WorkFlow.ProcessActivityFilterValueTVP;
+    DECLARE @p13 WorkFlow.ProcessActivityFilterValueTVP;
+    DECLARE @p14 WorkFlow.ProcessActivityFilterValueTVP;
+    BEGIN TRAN;
+    SET @t0 = SYSDATETIME();
+    EXEC [WorkFlow].[uspGetProcessActivities]
+         @EndDate=NULL
+        ,@FilterTags=@p2
+        ,@IsMobileEnabled=NULL
+        ,@IsOpenActivity=1
+        ,@IsChildElementTasks=0
+        ,@ProcessTitle=1
+        ,@IsPersistentDataRequired=NULL
+        ,@ProcessDateFilterAppliesTo=1
+        ,@ProcessStatus=@p9
+        ,@ProcessPriorities=@p10
+        ,@IsReferenceElementTasks=0
+        ,@StartDate=NULL
+        ,@ProcessTypes=@p13
+        ,@ProcessTriggers=@p14
+        ,@UserID=$(OtherUserID)
+        ,@RoleID=$(OtherUserRoleID)
+        ,@ParentProcessInstanceID=0;
+    DECLARE @ms int = DATEDIFF(ms, @t0, SYSDATETIME());
+    IF @@TRANCOUNT > 0 ROLLBACK TRAN;
+    INSERT INTO #TestResults (TestCase, Title, Expectation, Outcome, DurationMs, MaxDurationMs, ErrorNumber, ErrorMessage)
+    VALUES ('TC105', 'Different (non-admin) user and role', 'SUCCESS', 'SUCCESS', @ms, NULL, NULL, NULL);
+END TRY
+BEGIN CATCH
+    IF @@TRANCOUNT > 0 ROLLBACK TRAN;
+    INSERT INTO #TestResults (TestCase, Title, Expectation, Outcome, DurationMs, MaxDurationMs, ErrorNumber, ErrorMessage)
+    VALUES ('TC105', 'Different (non-admin) user and role', 'SUCCESS', 'ERROR', DATEDIFF(ms, @t0, SYSDATETIME()), NULL, ERROR_NUMBER(), ERROR_MESSAGE());
+END CATCH
+GO
+-- ==========================================================================
+-- TC106 | Security | RoleID = -1 with ProcessTitle = 2
+-- Expected: No error. No SupportedElementTypes are found, so it falls back to the user's group roles. Same as TC005 when role 346314 has no SupportedElementTypes attribute.
+-- ==========================================================================
+PRINT '>> TC106 - RoleID = -1 with ProcessTitle = 2';
+SELECT 'TC106' AS TestCase, 'RoleID = -1 with ProcessTitle = 2' AS Title;
+DECLARE @t0 datetime2 = SYSDATETIME();
+BEGIN TRY
+    DECLARE @p2 Tag.TagModelTVP;
+    INSERT INTO @p2 VALUES (6737,N'BSP',0,366713,NULL,28,366713,5031,410129,0,NULL,'0001-01-01 00:00:00');
+    DECLARE @p9 WorkFlow.ProcessActivityFilterValueTVP;
+    DECLARE @p10 WorkFlow.ProcessActivityFilterValueTVP;
+    DECLARE @p13 WorkFlow.ProcessActivityFilterValueTVP;
+    DECLARE @p14 WorkFlow.ProcessActivityFilterValueTVP;
+    BEGIN TRAN;
+    SET @t0 = SYSDATETIME();
+    EXEC [WorkFlow].[uspGetProcessActivities]
+         @EndDate=NULL
+        ,@FilterTags=@p2
+        ,@IsMobileEnabled=NULL
+        ,@IsOpenActivity=1
+        ,@IsChildElementTasks=0
+        ,@ProcessTitle=2
+        ,@IsPersistentDataRequired=NULL
+        ,@ProcessDateFilterAppliesTo=1
+        ,@ProcessStatus=@p9
+        ,@ProcessPriorities=@p10
+        ,@IsReferenceElementTasks=0
+        ,@StartDate=NULL
+        ,@ProcessTypes=@p13
+        ,@ProcessTriggers=@p14
+        ,@UserID=285
+        ,@RoleID=-1
+        ,@ParentProcessInstanceID=0;
+    DECLARE @ms int = DATEDIFF(ms, @t0, SYSDATETIME());
+    IF @@TRANCOUNT > 0 ROLLBACK TRAN;
+    INSERT INTO #TestResults (TestCase, Title, Expectation, Outcome, DurationMs, MaxDurationMs, ErrorNumber, ErrorMessage)
+    VALUES ('TC106', 'RoleID = -1 with ProcessTitle = 2', 'SUCCESS', 'SUCCESS', @ms, NULL, NULL, NULL);
+END TRY
+BEGIN CATCH
+    IF @@TRANCOUNT > 0 ROLLBACK TRAN;
+    INSERT INTO #TestResults (TestCase, Title, Expectation, Outcome, DurationMs, MaxDurationMs, ErrorNumber, ErrorMessage)
+    VALUES ('TC106', 'RoleID = -1 with ProcessTitle = 2', 'SUCCESS', 'ERROR', DATEDIFF(ms, @t0, SYSDATETIME()), NULL, ERROR_NUMBER(), ERROR_MESSAGE());
+END CATCH
+GO
+-- ==========================================================================
+-- TC107 | Mandatory | Omit @UserID
+-- Expected: Error 201: 'expects parameter @UserID, which was not supplied' (no default).
+-- ==========================================================================
+PRINT '>> TC107 - Omit @UserID';
+SELECT 'TC107' AS TestCase, 'Omit @UserID' AS Title;
+DECLARE @t0 datetime2 = SYSDATETIME();
+BEGIN TRY
+    DECLARE @p2 Tag.TagModelTVP;
+    INSERT INTO @p2 VALUES (6737,N'BSP',0,366713,NULL,28,366713,5031,410129,0,NULL,'0001-01-01 00:00:00');
+    DECLARE @p9 WorkFlow.ProcessActivityFilterValueTVP;
+    DECLARE @p10 WorkFlow.ProcessActivityFilterValueTVP;
+    DECLARE @p13 WorkFlow.ProcessActivityFilterValueTVP;
+    DECLARE @p14 WorkFlow.ProcessActivityFilterValueTVP;
+    BEGIN TRAN;
+    SET @t0 = SYSDATETIME();
+    EXEC [WorkFlow].[uspGetProcessActivities]
+         @EndDate=NULL
+        ,@FilterTags=@p2
+        ,@IsMobileEnabled=NULL
+        ,@IsOpenActivity=1
+        ,@IsChildElementTasks=0
+        ,@ProcessTitle=1
+        ,@IsPersistentDataRequired=NULL
+        ,@ProcessDateFilterAppliesTo=1
+        ,@ProcessStatus=@p9
+        ,@ProcessPriorities=@p10
+        ,@IsReferenceElementTasks=0
+        ,@StartDate=NULL
+        ,@ProcessTypes=@p13
+        ,@ProcessTriggers=@p14
+        ,@RoleID=346314
+        ,@ParentProcessInstanceID=0;
+    DECLARE @ms int = DATEDIFF(ms, @t0, SYSDATETIME());
+    IF @@TRANCOUNT > 0 ROLLBACK TRAN;
+    INSERT INTO #TestResults (TestCase, Title, Expectation, Outcome, DurationMs, MaxDurationMs, ErrorNumber, ErrorMessage)
+    VALUES ('TC107', 'Omit @UserID', 'ERROR', 'SUCCESS', @ms, NULL, NULL, NULL);
+END TRY
+BEGIN CATCH
+    IF @@TRANCOUNT > 0 ROLLBACK TRAN;
+    INSERT INTO #TestResults (TestCase, Title, Expectation, Outcome, DurationMs, MaxDurationMs, ErrorNumber, ErrorMessage)
+    VALUES ('TC107', 'Omit @UserID', 'ERROR', 'ERROR', DATEDIFF(ms, @t0, SYSDATETIME()), NULL, ERROR_NUMBER(), ERROR_MESSAGE());
+END CATCH
+GO
+-- ==========================================================================
+-- TC108 | Mandatory | Omit @ProcessTitle
+-- Expected: Error 201: 'expects parameter @ProcessTitle' (no default).
+-- ==========================================================================
+PRINT '>> TC108 - Omit @ProcessTitle';
+SELECT 'TC108' AS TestCase, 'Omit @ProcessTitle' AS Title;
+DECLARE @t0 datetime2 = SYSDATETIME();
+BEGIN TRY
+    DECLARE @p2 Tag.TagModelTVP;
+    INSERT INTO @p2 VALUES (6737,N'BSP',0,366713,NULL,28,366713,5031,410129,0,NULL,'0001-01-01 00:00:00');
+    DECLARE @p9 WorkFlow.ProcessActivityFilterValueTVP;
+    DECLARE @p10 WorkFlow.ProcessActivityFilterValueTVP;
+    DECLARE @p13 WorkFlow.ProcessActivityFilterValueTVP;
+    DECLARE @p14 WorkFlow.ProcessActivityFilterValueTVP;
+    BEGIN TRAN;
+    SET @t0 = SYSDATETIME();
+    EXEC [WorkFlow].[uspGetProcessActivities]
+         @EndDate=NULL
+        ,@FilterTags=@p2
+        ,@IsMobileEnabled=NULL
+        ,@IsOpenActivity=1
+        ,@IsChildElementTasks=0
+        ,@IsPersistentDataRequired=NULL
+        ,@ProcessDateFilterAppliesTo=1
+        ,@ProcessStatus=@p9
+        ,@ProcessPriorities=@p10
+        ,@IsReferenceElementTasks=0
+        ,@StartDate=NULL
+        ,@ProcessTypes=@p13
+        ,@ProcessTriggers=@p14
+        ,@UserID=285
+        ,@RoleID=346314
+        ,@ParentProcessInstanceID=0;
+    DECLARE @ms int = DATEDIFF(ms, @t0, SYSDATETIME());
+    IF @@TRANCOUNT > 0 ROLLBACK TRAN;
+    INSERT INTO #TestResults (TestCase, Title, Expectation, Outcome, DurationMs, MaxDurationMs, ErrorNumber, ErrorMessage)
+    VALUES ('TC108', 'Omit @ProcessTitle', 'ERROR', 'SUCCESS', @ms, NULL, NULL, NULL);
+END TRY
+BEGIN CATCH
+    IF @@TRANCOUNT > 0 ROLLBACK TRAN;
+    INSERT INTO #TestResults (TestCase, Title, Expectation, Outcome, DurationMs, MaxDurationMs, ErrorNumber, ErrorMessage)
+    VALUES ('TC108', 'Omit @ProcessTitle', 'ERROR', 'ERROR', DATEDIFF(ms, @t0, SYSDATETIME()), NULL, ERROR_NUMBER(), ERROR_MESSAGE());
+END CATCH
+GO
+-- ==========================================================================
+-- TC110 | Diagnostics | IsDebug = 1
+-- Expected: Business result sets match TC001. Extra debug result sets (labelled '----------#...----------') appear in between.
+-- ==========================================================================
+PRINT '>> TC110 - IsDebug = 1';
+SELECT 'TC110' AS TestCase, 'IsDebug = 1' AS Title;
+DECLARE @t0 datetime2 = SYSDATETIME();
+BEGIN TRY
+    DECLARE @p2 Tag.TagModelTVP;
+    INSERT INTO @p2 VALUES (6737,N'BSP',0,366713,NULL,28,366713,5031,410129,0,NULL,'0001-01-01 00:00:00');
+    DECLARE @p9 WorkFlow.ProcessActivityFilterValueTVP;
+    DECLARE @p10 WorkFlow.ProcessActivityFilterValueTVP;
+    DECLARE @p13 WorkFlow.ProcessActivityFilterValueTVP;
+    DECLARE @p14 WorkFlow.ProcessActivityFilterValueTVP;
+    BEGIN TRAN;
+    SET @t0 = SYSDATETIME();
+    EXEC [WorkFlow].[uspGetProcessActivities]
+         @EndDate=NULL
+        ,@FilterTags=@p2
+        ,@IsMobileEnabled=NULL
+        ,@IsOpenActivity=1
+        ,@IsChildElementTasks=0
+        ,@ProcessTitle=1
+        ,@IsPersistentDataRequired=NULL
+        ,@ProcessDateFilterAppliesTo=1
+        ,@ProcessStatus=@p9
+        ,@ProcessPriorities=@p10
+        ,@IsReferenceElementTasks=0
+        ,@StartDate=NULL
+        ,@ProcessTypes=@p13
+        ,@ProcessTriggers=@p14
+        ,@UserID=285
+        ,@RoleID=346314
+        ,@ParentProcessInstanceID=0
+        ,@IsDebug=1;
+    DECLARE @ms int = DATEDIFF(ms, @t0, SYSDATETIME());
+    IF @@TRANCOUNT > 0 ROLLBACK TRAN;
+    INSERT INTO #TestResults (TestCase, Title, Expectation, Outcome, DurationMs, MaxDurationMs, ErrorNumber, ErrorMessage)
+    VALUES ('TC110', 'IsDebug = 1', 'SUCCESS', 'SUCCESS', @ms, NULL, NULL, NULL);
+END TRY
+BEGIN CATCH
+    IF @@TRANCOUNT > 0 ROLLBACK TRAN;
+    INSERT INTO #TestResults (TestCase, Title, Expectation, Outcome, DurationMs, MaxDurationMs, ErrorNumber, ErrorMessage)
+    VALUES ('TC110', 'IsDebug = 1', 'SUCCESS', 'ERROR', DATEDIFF(ms, @t0, SYSDATETIME()), NULL, ERROR_NUMBER(), ERROR_MESSAGE());
+END CATCH
+GO
+-- ==========================================================================
+-- TC111 | Diagnostics | EnableTimeLog = 1 writes NF.ProcedureTimeLog
+-- Expected: Result sets match TC001, and rows are inserted into NF.ProcedureTimeLog (the harness checks this, then rolls back).
+-- ==========================================================================
+PRINT '>> TC111 - EnableTimeLog = 1 writes NF.ProcedureTimeLog';
+SELECT 'TC111' AS TestCase, 'EnableTimeLog = 1 writes NF.ProcedureTimeLog' AS Title;
+DECLARE @t0 datetime2 = SYSDATETIME();
+BEGIN TRY
+    DECLARE @p2 Tag.TagModelTVP;
+    INSERT INTO @p2 VALUES (6737,N'BSP',0,366713,NULL,28,366713,5031,410129,0,NULL,'0001-01-01 00:00:00');
+    DECLARE @p9 WorkFlow.ProcessActivityFilterValueTVP;
+    DECLARE @p10 WorkFlow.ProcessActivityFilterValueTVP;
+    DECLARE @p13 WorkFlow.ProcessActivityFilterValueTVP;
+    DECLARE @p14 WorkFlow.ProcessActivityFilterValueTVP;
+    BEGIN TRAN;
+    DECLARE @logBefore int = (SELECT COUNT(*) FROM NF.ProcedureTimeLog);
+    SET @t0 = SYSDATETIME();
+    EXEC [WorkFlow].[uspGetProcessActivities]
+         @EndDate=NULL
+        ,@FilterTags=@p2
+        ,@IsMobileEnabled=NULL
+        ,@IsOpenActivity=1
+        ,@IsChildElementTasks=0
+        ,@ProcessTitle=1
+        ,@IsPersistentDataRequired=NULL
+        ,@ProcessDateFilterAppliesTo=1
+        ,@ProcessStatus=@p9
+        ,@ProcessPriorities=@p10
+        ,@IsReferenceElementTasks=0
+        ,@StartDate=NULL
+        ,@ProcessTypes=@p13
+        ,@ProcessTriggers=@p14
+        ,@UserID=285
+        ,@RoleID=346314
+        ,@ParentProcessInstanceID=0
+        ,@EnableTimeLog=1;
+    DECLARE @ms int = DATEDIFF(ms, @t0, SYSDATETIME());
+    IF (SELECT COUNT(*) FROM NF.ProcedureTimeLog) <= @logBefore
+        THROW 50001, 'No rows were written to NF.ProcedureTimeLog', 1;
+    IF @@TRANCOUNT > 0 ROLLBACK TRAN;
+    INSERT INTO #TestResults (TestCase, Title, Expectation, Outcome, DurationMs, MaxDurationMs, ErrorNumber, ErrorMessage)
+    VALUES ('TC111', 'EnableTimeLog = 1 writes NF.ProcedureTimeLog', 'SUCCESS', 'SUCCESS', @ms, NULL, NULL, NULL);
+END TRY
+BEGIN CATCH
+    IF @@TRANCOUNT > 0 ROLLBACK TRAN;
+    INSERT INTO #TestResults (TestCase, Title, Expectation, Outcome, DurationMs, MaxDurationMs, ErrorNumber, ErrorMessage)
+    VALUES ('TC111', 'EnableTimeLog = 1 writes NF.ProcedureTimeLog', 'SUCCESS', 'ERROR', DATEDIFF(ms, @t0, SYSDATETIME()), NULL, ERROR_NUMBER(), ERROR_MESSAGE());
+END CATCH
+GO
+-- ==========================================================================
+-- TC112 | Diagnostics | IsDebug = 1 and EnableTimeLog = 1
+-- Expected: Like TC110, plus a final #TimeLog result set listing the step timings.
+-- ==========================================================================
+PRINT '>> TC112 - IsDebug = 1 and EnableTimeLog = 1';
+SELECT 'TC112' AS TestCase, 'IsDebug = 1 and EnableTimeLog = 1' AS Title;
+DECLARE @t0 datetime2 = SYSDATETIME();
+BEGIN TRY
+    DECLARE @p2 Tag.TagModelTVP;
+    INSERT INTO @p2 VALUES (6737,N'BSP',0,366713,NULL,28,366713,5031,410129,0,NULL,'0001-01-01 00:00:00');
+    DECLARE @p9 WorkFlow.ProcessActivityFilterValueTVP;
+    DECLARE @p10 WorkFlow.ProcessActivityFilterValueTVP;
+    DECLARE @p13 WorkFlow.ProcessActivityFilterValueTVP;
+    DECLARE @p14 WorkFlow.ProcessActivityFilterValueTVP;
+    BEGIN TRAN;
+    SET @t0 = SYSDATETIME();
+    EXEC [WorkFlow].[uspGetProcessActivities]
+         @EndDate=NULL
+        ,@FilterTags=@p2
+        ,@IsMobileEnabled=NULL
+        ,@IsOpenActivity=1
+        ,@IsChildElementTasks=0
+        ,@ProcessTitle=1
+        ,@IsPersistentDataRequired=NULL
+        ,@ProcessDateFilterAppliesTo=1
+        ,@ProcessStatus=@p9
+        ,@ProcessPriorities=@p10
+        ,@IsReferenceElementTasks=0
+        ,@StartDate=NULL
+        ,@ProcessTypes=@p13
+        ,@ProcessTriggers=@p14
+        ,@UserID=285
+        ,@RoleID=346314
+        ,@ParentProcessInstanceID=0
+        ,@IsDebug=1
+        ,@EnableTimeLog=1;
+    DECLARE @ms int = DATEDIFF(ms, @t0, SYSDATETIME());
+    IF @@TRANCOUNT > 0 ROLLBACK TRAN;
+    INSERT INTO #TestResults (TestCase, Title, Expectation, Outcome, DurationMs, MaxDurationMs, ErrorNumber, ErrorMessage)
+    VALUES ('TC112', 'IsDebug = 1 and EnableTimeLog = 1', 'SUCCESS', 'SUCCESS', @ms, NULL, NULL, NULL);
+END TRY
+BEGIN CATCH
+    IF @@TRANCOUNT > 0 ROLLBACK TRAN;
+    INSERT INTO #TestResults (TestCase, Title, Expectation, Outcome, DurationMs, MaxDurationMs, ErrorNumber, ErrorMessage)
+    VALUES ('TC112', 'IsDebug = 1 and EnableTimeLog = 1', 'SUCCESS', 'ERROR', DATEDIFF(ms, @t0, SYSDATETIME()), NULL, ERROR_NUMBER(), ERROR_MESSAGE());
+END CATCH
+GO
+-- ==========================================================================
+-- TC120 | Combination | All filters applied together
+-- Expected: Rows satisfy every filter. A subset of TC062, TC050, TC075, TC080 and TC085.
+-- ==========================================================================
+PRINT '>> TC120 - All filters applied together';
+SELECT 'TC120' AS TestCase, 'All filters applied together' AS Title;
+DECLARE @t0 datetime2 = SYSDATETIME();
+BEGIN TRY
+    DECLARE @p2 Tag.TagModelTVP;
+    INSERT INTO @p2 VALUES (6737,N'BSP',0,366713,NULL,28,366713,5031,410129,0,NULL,'0001-01-01 00:00:00');
+    DECLARE @p9 WorkFlow.ProcessActivityFilterValueTVP;
+    DECLARE @p10 WorkFlow.ProcessActivityFilterValueTVP;
+    INSERT INTO @p10 (Value) VALUES ($(PriorityValue));
+    DECLARE @p13 WorkFlow.ProcessActivityFilterValueTVP;
+    INSERT INTO @p13 (Value) VALUES ($(TypeValue));
+    DECLARE @p14 WorkFlow.ProcessActivityFilterValueTVP;
+    INSERT INTO @p14 (Value) VALUES ($(TriggerValue));
+    BEGIN TRAN;
+    SET @t0 = SYSDATETIME();
+    EXEC [WorkFlow].[uspGetProcessActivities]
+         @EndDate='$(EndDate)'
+        ,@FilterTags=@p2
+        ,@IsMobileEnabled=1
+        ,@IsOpenActivity=1
+        ,@IsChildElementTasks=0
+        ,@ProcessTitle=1
+        ,@IsPersistentDataRequired=NULL
+        ,@ProcessDateFilterAppliesTo=1
+        ,@ProcessStatus=@p9
+        ,@ProcessPriorities=@p10
+        ,@IsReferenceElementTasks=0
+        ,@StartDate='$(StartDate)'
+        ,@ProcessTypes=@p13
+        ,@ProcessTriggers=@p14
+        ,@UserID=285
+        ,@RoleID=346314
+        ,@ParentProcessInstanceID=0;
+    DECLARE @ms int = DATEDIFF(ms, @t0, SYSDATETIME());
+    IF @@TRANCOUNT > 0 ROLLBACK TRAN;
+    INSERT INTO #TestResults (TestCase, Title, Expectation, Outcome, DurationMs, MaxDurationMs, ErrorNumber, ErrorMessage)
+    VALUES ('TC120', 'All filters applied together', 'SUCCESS', 'SUCCESS', @ms, NULL, NULL, NULL);
 END TRY
 BEGIN CATCH
     IF @@TRANCOUNT > 0 ROLLBACK TRAN;
@@ -2347,11 +3087,11 @@ BEGIN CATCH
 END CATCH
 GO
 -- ==========================================================================
--- TC121 | Combination | All optional bit flags = 1
--- Expected: No error. Includes child and reference tasks, mobile-enabled only, with persistent data.
+-- TC121 | Combination | All nullable scalar parameters NULL
+-- Expected: No error. Sets (1), (2) and (4) are empty (UserID NULL).
 -- ==========================================================================
-PRINT '>> TC121 - All optional bit flags = 1';
-SELECT 'TC121' AS TestCase, 'All optional bit flags = 1' AS Title;
+PRINT '>> TC121 - All nullable scalar parameters NULL';
+SELECT 'TC121' AS TestCase, 'All nullable scalar parameters NULL' AS Title;
 DECLARE @t0 datetime2 = SYSDATETIME();
 BEGIN TRY
     DECLARE @p2 Tag.TagModelTVP;
@@ -2360,52 +3100,8 @@ BEGIN TRY
     DECLARE @p10 WorkFlow.ProcessActivityFilterValueTVP;
     DECLARE @p13 WorkFlow.ProcessActivityFilterValueTVP;
     DECLARE @p14 WorkFlow.ProcessActivityFilterValueTVP;
-    SET @t0 = SYSDATETIME();
     BEGIN TRAN;
-    EXEC [WorkFlow].[uspGetProcessActivities]
-         @EndDate=NULL
-        ,@FilterTags=@p2
-        ,@IsMobileEnabled=1
-        ,@IsOpenActivity=1
-        ,@IsChildElementTasks=1
-        ,@ProcessTitle=1
-        ,@IsPersistentDataRequired=1
-        ,@ProcessDateFilterAppliesTo=1
-        ,@ProcessStatus=@p9
-        ,@ProcessPriorities=@p10
-        ,@IsReferenceElementTasks=1
-        ,@StartDate=NULL
-        ,@ProcessTypes=@p13
-        ,@ProcessTriggers=@p14
-        ,@UserID=285
-        ,@RoleID=346314
-        ,@ParentProcessInstanceID=0;
-    IF @@TRANCOUNT > 0 ROLLBACK TRAN;
-    INSERT INTO #TestResults (TestCase, Title, Expectation, Outcome, DurationMs, MaxDurationMs, ErrorNumber, ErrorMessage)
-    VALUES ('TC121', 'All optional bit flags = 1', 'SUCCESS', 'SUCCESS', DATEDIFF(ms, @t0, SYSDATETIME()), NULL, NULL, NULL);
-END TRY
-BEGIN CATCH
-    IF @@TRANCOUNT > 0 ROLLBACK TRAN;
-    INSERT INTO #TestResults (TestCase, Title, Expectation, Outcome, DurationMs, MaxDurationMs, ErrorNumber, ErrorMessage)
-    VALUES ('TC121', 'All optional bit flags = 1', 'SUCCESS', 'ERROR', DATEDIFF(ms, @t0, SYSDATETIME()), NULL, ERROR_NUMBER(), ERROR_MESSAGE());
-END CATCH
-GO
--- ==========================================================================
--- TC122 | Combination | All nullable parameters NULL
--- Expected: Zero rows or a handled validation error. No unhandled error and no unfiltered data leak.
--- ==========================================================================
-PRINT '>> TC122 - All nullable parameters NULL';
-SELECT 'TC122' AS TestCase, 'All nullable parameters NULL' AS Title;
-DECLARE @t0 datetime2 = SYSDATETIME();
-BEGIN TRY
-    DECLARE @p2 Tag.TagModelTVP;
-    INSERT INTO @p2 VALUES (6737,N'BSP',0,366713,NULL,28,366713,5031,410129,0,NULL,'0001-01-01 00:00:00');
-    DECLARE @p9 WorkFlow.ProcessActivityFilterValueTVP;
-    DECLARE @p10 WorkFlow.ProcessActivityFilterValueTVP;
-    DECLARE @p13 WorkFlow.ProcessActivityFilterValueTVP;
-    DECLARE @p14 WorkFlow.ProcessActivityFilterValueTVP;
     SET @t0 = SYSDATETIME();
-    BEGIN TRAN;
     EXEC [WorkFlow].[uspGetProcessActivities]
          @EndDate=NULL
         ,@FilterTags=@p2
@@ -2424,14 +3120,15 @@ BEGIN TRY
         ,@UserID=NULL
         ,@RoleID=NULL
         ,@ParentProcessInstanceID=NULL;
+    DECLARE @ms int = DATEDIFF(ms, @t0, SYSDATETIME());
     IF @@TRANCOUNT > 0 ROLLBACK TRAN;
     INSERT INTO #TestResults (TestCase, Title, Expectation, Outcome, DurationMs, MaxDurationMs, ErrorNumber, ErrorMessage)
-    VALUES ('TC122', 'All nullable parameters NULL', 'ANY', 'SUCCESS', DATEDIFF(ms, @t0, SYSDATETIME()), NULL, NULL, NULL);
+    VALUES ('TC121', 'All nullable scalar parameters NULL', 'SUCCESS', 'SUCCESS', @ms, NULL, NULL, NULL);
 END TRY
 BEGIN CATCH
     IF @@TRANCOUNT > 0 ROLLBACK TRAN;
     INSERT INTO #TestResults (TestCase, Title, Expectation, Outcome, DurationMs, MaxDurationMs, ErrorNumber, ErrorMessage)
-    VALUES ('TC122', 'All nullable parameters NULL', 'ANY', 'ERROR', DATEDIFF(ms, @t0, SYSDATETIME()), NULL, ERROR_NUMBER(), ERROR_MESSAGE());
+    VALUES ('TC121', 'All nullable scalar parameters NULL', 'SUCCESS', 'ERROR', DATEDIFF(ms, @t0, SYSDATETIME()), NULL, ERROR_NUMBER(), ERROR_MESSAGE());
 END CATCH
 GO
 -- ==========================================================================
@@ -2448,8 +3145,8 @@ BEGIN TRY
     DECLARE @p10 WorkFlow.ProcessActivityFilterValueTVP;
     DECLARE @p13 WorkFlow.ProcessActivityFilterValueTVP;
     DECLARE @p14 WorkFlow.ProcessActivityFilterValueTVP;
-    SET @t0 = SYSDATETIME();
     BEGIN TRAN;
+    SET @t0 = SYSDATETIME();
     EXEC [WorkFlow].[uspGetProcessActivities]
          @EndDate=NULL
         ,@FilterTags=@p2
@@ -2468,9 +3165,10 @@ BEGIN TRY
         ,@UserID=285
         ,@RoleID=346314
         ,@ParentProcessInstanceID=0;
+    DECLARE @ms int = DATEDIFF(ms, @t0, SYSDATETIME());
     IF @@TRANCOUNT > 0 ROLLBACK TRAN;
     INSERT INTO #TestResults (TestCase, Title, Expectation, Outcome, DurationMs, MaxDurationMs, ErrorNumber, ErrorMessage)
-    VALUES ('TC130', 'Baseline call within time budget', 'SUCCESS', 'SUCCESS', DATEDIFF(ms, @t0, SYSDATETIME()), $(MaxDurationMs), NULL, NULL);
+    VALUES ('TC130', 'Baseline call within time budget', 'SUCCESS', 'SUCCESS', @ms, $(MaxDurationMs), NULL, NULL);
 END TRY
 BEGIN CATCH
     IF @@TRANCOUNT > 0 ROLLBACK TRAN;
@@ -2480,25 +3178,27 @@ END CATCH
 GO
 -- ==========================================================================
 -- TC131 | Performance | @FilterTags with 500 rows
--- Expected: No error. Completes within $(MaxDurationMs) ms. No tempdb spill or plan regression.
+-- Expected: No error. Completes within $(MaxDurationMs) ms.
 -- ==========================================================================
 PRINT '>> TC131 - @FilterTags with 500 rows';
 SELECT 'TC131' AS TestCase, '@FilterTags with 500 rows' AS Title;
 DECLARE @t0 datetime2 = SYSDATETIME();
 BEGIN TRY
     DECLARE @p2 Tag.TagModelTVP;
-    DECLARE @i int = 0;
+    DECLARE @tag Tag.TagModelTVP, @i int = 0;
+    INSERT INTO @tag VALUES (6737,N'BSP',0,366713,NULL,28,366713,5031,410129,0,NULL,'0001-01-01 00:00:00');
     WHILE @i < 500
     BEGIN
-        INSERT INTO @p2 VALUES (6737 + @i,N'BSP',0,366713,NULL,28,366713,5031,410129,0,NULL,'0001-01-01 00:00:00');
+        UPDATE @tag SET ObjectID = 366713 + @i, TagName = CONCAT(N'PERF_', @i);
+        INSERT INTO @p2 SELECT * FROM @tag;
         SET @i += 1;
     END
     DECLARE @p9 WorkFlow.ProcessActivityFilterValueTVP;
     DECLARE @p10 WorkFlow.ProcessActivityFilterValueTVP;
     DECLARE @p13 WorkFlow.ProcessActivityFilterValueTVP;
     DECLARE @p14 WorkFlow.ProcessActivityFilterValueTVP;
-    SET @t0 = SYSDATETIME();
     BEGIN TRAN;
+    SET @t0 = SYSDATETIME();
     EXEC [WorkFlow].[uspGetProcessActivities]
          @EndDate=NULL
         ,@FilterTags=@p2
@@ -2517,9 +3217,10 @@ BEGIN TRY
         ,@UserID=285
         ,@RoleID=346314
         ,@ParentProcessInstanceID=0;
+    DECLARE @ms int = DATEDIFF(ms, @t0, SYSDATETIME());
     IF @@TRANCOUNT > 0 ROLLBACK TRAN;
     INSERT INTO #TestResults (TestCase, Title, Expectation, Outcome, DurationMs, MaxDurationMs, ErrorNumber, ErrorMessage)
-    VALUES ('TC131', '@FilterTags with 500 rows', 'SUCCESS', 'SUCCESS', DATEDIFF(ms, @t0, SYSDATETIME()), $(MaxDurationMs), NULL, NULL);
+    VALUES ('TC131', '@FilterTags with 500 rows', 'SUCCESS', 'SUCCESS', @ms, $(MaxDurationMs), NULL, NULL);
 END TRY
 BEGIN CATCH
     IF @@TRANCOUNT > 0 ROLLBACK TRAN;
@@ -2528,11 +3229,11 @@ BEGIN CATCH
 END CATCH
 GO
 -- ==========================================================================
--- TC132 | Performance | Widest date range with child + reference tasks
+-- TC132 | Performance | Largest result: ProcessTitle 2, open and closed
 -- Expected: Completes within $(MaxDurationMs) ms with the largest realistic result set.
 -- ==========================================================================
-PRINT '>> TC132 - Widest date range with child + reference tasks';
-SELECT 'TC132' AS TestCase, 'Widest date range with child + reference tasks' AS Title;
+PRINT '>> TC132 - Largest result: ProcessTitle 2, open and closed';
+SELECT 'TC132' AS TestCase, 'Largest result: ProcessTitle 2, open and closed' AS Title;
 DECLARE @t0 datetime2 = SYSDATETIME();
 BEGIN TRY
     DECLARE @p2 Tag.TagModelTVP;
@@ -2541,34 +3242,35 @@ BEGIN TRY
     DECLARE @p10 WorkFlow.ProcessActivityFilterValueTVP;
     DECLARE @p13 WorkFlow.ProcessActivityFilterValueTVP;
     DECLARE @p14 WorkFlow.ProcessActivityFilterValueTVP;
-    SET @t0 = SYSDATETIME();
     BEGIN TRAN;
+    SET @t0 = SYSDATETIME();
     EXEC [WorkFlow].[uspGetProcessActivities]
-         @EndDate='9999-12-31'
+         @EndDate=NULL
         ,@FilterTags=@p2
         ,@IsMobileEnabled=NULL
         ,@IsOpenActivity=NULL
-        ,@IsChildElementTasks=1
-        ,@ProcessTitle=1
+        ,@IsChildElementTasks=0
+        ,@ProcessTitle=2
         ,@IsPersistentDataRequired=NULL
         ,@ProcessDateFilterAppliesTo=1
         ,@ProcessStatus=@p9
         ,@ProcessPriorities=@p10
-        ,@IsReferenceElementTasks=1
-        ,@StartDate='1900-01-01'
+        ,@IsReferenceElementTasks=0
+        ,@StartDate=NULL
         ,@ProcessTypes=@p13
         ,@ProcessTriggers=@p14
         ,@UserID=285
         ,@RoleID=346314
         ,@ParentProcessInstanceID=0;
+    DECLARE @ms int = DATEDIFF(ms, @t0, SYSDATETIME());
     IF @@TRANCOUNT > 0 ROLLBACK TRAN;
     INSERT INTO #TestResults (TestCase, Title, Expectation, Outcome, DurationMs, MaxDurationMs, ErrorNumber, ErrorMessage)
-    VALUES ('TC132', 'Widest date range with child + reference tasks', 'SUCCESS', 'SUCCESS', DATEDIFF(ms, @t0, SYSDATETIME()), $(MaxDurationMs), NULL, NULL);
+    VALUES ('TC132', 'Largest result: ProcessTitle 2, open and closed', 'SUCCESS', 'SUCCESS', @ms, $(MaxDurationMs), NULL, NULL);
 END TRY
 BEGIN CATCH
     IF @@TRANCOUNT > 0 ROLLBACK TRAN;
     INSERT INTO #TestResults (TestCase, Title, Expectation, Outcome, DurationMs, MaxDurationMs, ErrorNumber, ErrorMessage)
-    VALUES ('TC132', 'Widest date range with child + reference tasks', 'SUCCESS', 'ERROR', DATEDIFF(ms, @t0, SYSDATETIME()), $(MaxDurationMs), ERROR_NUMBER(), ERROR_MESSAGE());
+    VALUES ('TC132', 'Largest result: ProcessTitle 2, open and closed', 'SUCCESS', 'ERROR', DATEDIFF(ms, @t0, SYSDATETIME()), $(MaxDurationMs), ERROR_NUMBER(), ERROR_MESSAGE());
 END CATCH
 GO
 -- ==========================================================================
@@ -2582,9 +3284,11 @@ SELECT  TestCase,
         MaxDurationMs,
         CASE
             WHEN MaxDurationMs IS NOT NULL AND DurationMs > MaxDurationMs THEN 'FAIL (slow)'
-            WHEN Expectation = 'SUCCESS' AND Outcome = 'SUCCESS'          THEN 'PASS*'
-            WHEN Expectation = 'ERROR'   AND Outcome = 'ERROR'            THEN 'PASS'
-            WHEN Expectation = 'ANY'                                      THEN 'REVIEW'
+            WHEN Expectation = 'SUCCESS' AND Outcome = 'SUCCESS'            THEN 'PASS*'
+            WHEN Expectation = 'ERROR'   AND Outcome = 'ERROR'              THEN 'PASS'
+            WHEN Expectation = 'DEFECT'  AND Outcome = 'ERROR'              THEN 'DEFECT REPRODUCED'
+            WHEN Expectation = 'DEFECT'  AND Outcome = 'SUCCESS'            THEN 'DEFECT FIXED?'
+            WHEN Expectation = 'ANY'                                           THEN 'REVIEW'
             ELSE 'FAIL'
         END AS Verdict,
         ErrorNumber,
@@ -2598,7 +3302,10 @@ CROSS APPLY (SELECT CASE
             WHEN r.MaxDurationMs IS NOT NULL AND r.DurationMs > r.MaxDurationMs THEN 'FAIL (slow)'
             WHEN r.Expectation = 'SUCCESS' AND r.Outcome = 'SUCCESS'            THEN 'PASS*'
             WHEN r.Expectation = 'ERROR'   AND r.Outcome = 'ERROR'              THEN 'PASS'
-            WHEN r.Expectation = 'ANY'                                          THEN 'REVIEW'
-            ELSE 'FAIL' END) v(Verdict)
+            WHEN r.Expectation = 'DEFECT'  AND r.Outcome = 'ERROR'              THEN 'DEFECT REPRODUCED'
+            WHEN r.Expectation = 'DEFECT'  AND r.Outcome = 'SUCCESS'            THEN 'DEFECT FIXED?'
+            WHEN r.Expectation = 'ANY'                                           THEN 'REVIEW'
+            ELSE 'FAIL'
+        END) v(Verdict)
 GROUP BY v.Verdict;
 GO
