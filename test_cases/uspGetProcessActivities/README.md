@@ -44,6 +44,7 @@ Every path keeps **only the latest activity per process** (`RANK() ... = 1`). Af
 | `TestCases.csv` | The same cases for Excel, with **Suspected Defect**, **Actual Result** and **Status** columns |
 | `00_Discover_Metadata.sql` | Read-only queries for parameter types, table-type columns, result shape, source and dependent tables |
 | `01_Run_TestCases.sql` | SQLCMD-mode harness. Every case runs inside a rolled-back transaction, and a summary follows at the end |
+| `02_Diagnose_Closed_6Months.sql` | Finds why the closed-cases call over the last 6 months (`@IsOpenActivity = 0`) is slow: per-step timings, I/O, parameter sniffing, data volume and indexes |
 | `generate_test_cases.py` | Single source of truth. Edit the cases here, then run `python generate_test_cases.py` |
 
 ## Coverage (70 cases, 12 suspected defects)
