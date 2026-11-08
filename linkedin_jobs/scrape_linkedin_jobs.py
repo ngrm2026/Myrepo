@@ -52,9 +52,14 @@ def search(keywords, location, extra):
     """Yield search cards for one filter combination until results run out."""
     start = 0
     while start < 1000:
-        html = get(f"{BASE}/seeMoreJobPostings/search",
-                   {"keywords": keywords, "location": location, "start": start, **extra})
-        cards = BeautifulSoup(html, "html.parser").select("div.base-card[data-entity-urn]") if html else []
+        # An empty page can mean the end of results or brief throttling, so retry a few times.
+        for attempt in range(4):
+            html = get(f"{BASE}/seeMoreJobPostings/search",
+                       {"keywords": keywords, "location": location, "start": start, **extra})
+            cards = BeautifulSoup(html, "html.parser").select("div.base-card[data-entity-urn]") if html else []
+            if cards:
+                break
+            time.sleep(10 * (attempt + 1))
         if not cards:
             break
         for c in cards:
