@@ -1,0 +1,44 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 800 600" width="800" height="600" role="img"><title>EB and generator changeover switch panel illustration</title>
+<defs>
+  <radialGradient id="studio" cx="50%" cy="38%" r="75%">
+    <stop offset="0" stop-color="#ffffff"/><stop offset="0.6" stop-color="#eef2f7"/><stop offset="1" stop-color="#d6dee9"/>
+  </radialGradient>
+  <linearGradient id="wall" x1="0" y1="0" x2="0" y2="1">
+    <stop offset="0" stop-color="#e9e4dc"/><stop offset="1" stop-color="#d9d2c6"/>
+  </linearGradient>
+  <linearGradient id="darkwall" x1="0" y1="0" x2="1" y2="1">
+    <stop offset="0" stop-color="#142d53"/><stop offset="1" stop-color="#071328"/>
+  </linearGradient>
+  <linearGradient id="metal" x1="0" y1="0" x2="1" y2="1">
+    <stop offset="0" stop-color="#f4f6f9"/><stop offset="0.55" stop-color="#dfe4ea"/><stop offset="1" stop-color="#c3cbd5"/>
+  </linearGradient>
+  <linearGradient id="greypanel" x1="0" y1="0" x2="1" y2="1">
+    <stop offset="0" stop-color="#d9dde3"/><stop offset="1" stop-color="#a9b1bc"/>
+  </linearGradient>
+  <linearGradient id="plastic" x1="0" y1="0" x2="0" y2="1">
+    <stop offset="0" stop-color="#ffffff"/><stop offset="1" stop-color="#e7eaee"/>
+  </linearGradient>
+  <linearGradient id="darkplastic" x1="0" y1="0" x2="0" y2="1">
+    <stop offset="0" stop-color="#3a414b"/><stop offset="1" stop-color="#1c2129"/>
+  </linearGradient>
+  <linearGradient id="knob" x1="0" y1="0" x2="1" y2="1">
+    <stop offset="0" stop-color="#4b5563"/><stop offset="1" stop-color="#111827"/>
+  </linearGradient>
+  <linearGradient id="redknob" x1="0" y1="0" x2="1" y2="1">
+    <stop offset="0" stop-color="#ef4444"/><stop offset="1" stop-color="#991b1b"/>
+  </linearGradient>
+  <linearGradient id="copper" x1="0" y1="0" x2="1" y2="0">
+    <stop offset="0" stop-color="#b45309"/><stop offset="0.5" stop-color="#f59e0b"/><stop offset="1" stop-color="#b45309"/>
+  </linearGradient>
+  <linearGradient id="lcd" x1="0" y1="0" x2="0" y2="1">
+    <stop offset="0" stop-color="#0f3d2e"/><stop offset="1" stop-color="#062419"/>
+  </linearGradient>
+  <linearGradient id="panelblue" x1="0" y1="0" x2="1" y2="1">
+    <stop offset="0" stop-color="#e8ebef"/><stop offset="1" stop-color="#c7ced8"/>
+  </linearGradient>
+  <filter id="soft" x="-30%" y="-30%" width="160%" height="160%"><feGaussianBlur stdDeviation="14"/></filter>
+  <filter id="drop" x="-20%" y="-20%" width="140%" height="150%">
+    <feDropShadow dx="0" dy="10" stdDeviation="12" flood-color="#0b1a33" flood-opacity="0.28"/>
+  </filter>
+  <filter id="glow" x="-100%" y="-100%" width="300%" height="300%"><feGaussianBlur stdDeviation="6"/></filter>
+</defs><rect width="800" height="600" fill="url(#studio)"/><path d="M0 450 L800 410 L800 600 L0 600 Z" fill="#cfd8e4" opacity="0.45"/><path d="M630 0 L800 0 L800 170 Z" fill="#f97316" opacity="0.9"/><path d="M680 0 L800 0 L800 120 Z" fill="#facc15"/><ellipse cx="400" cy="545" rx="220" ry="18" fill="#0b1a33" opacity="0.25" filter="url(#soft)"/><g filter="url(#drop)"><rect x="220" y="60" width="360" height="470" rx="14" fill="url(#panelblue)" stroke="#9aa5b3" stroke-width="2"/></g><rect x="230" y="70" width="340" height="450" rx="8" fill="none" stroke="#ffffff" stroke-opacity="0.7" stroke-width="2"/><circle cx="242" cy="82" r="5" fill="#9aa3ae" stroke="#6b7480" stroke-width="1"/><line x1="238.5" y1="82" x2="245.5" y2="82" stroke="#4b5563" stroke-width="1.4"/><circle cx="558" cy="82" r="5" fill="#9aa3ae" stroke="#6b7480" stroke-width="1"/><line x1="554.5" y1="82" x2="561.5" y2="82" stroke="#4b5563" stroke-width="1.4"/><circle cx="242" cy="508" r="5" fill="#9aa3ae" stroke="#6b7480" stroke-width="1"/><line x1="238.5" y1="508" x2="245.5" y2="508" stroke="#4b5563" stroke-width="1.4"/><circle cx="558" cy="508" r="5" fill="#9aa3ae" stroke="#6b7480" stroke-width="1"/><line x1="554.5" y1="508" x2="561.5" y2="508" stroke="#4b5563" stroke-width="1.4"/><rect x="270" y="90" width="260" height="34" rx="4" fill="#071328"/><text x="400.0" y="112.4" font-family="Arial, Helvetica, sans-serif" font-size="15" font-weight="700" fill="#ffffff" text-anchor="middle" >EB / DG CHANGEOVER</text><rect x="262" y="140" width="276" height="120" rx="10" fill="#1f2937"/><circle cx="330" cy="190" r="24" fill="#9ca3af"/><circle cx="330" cy="190" r="24" fill="none" stroke="#6b7280"/><circle cx="330" cy="190" r="28.8" fill="#22c55e" opacity="0.45" filter="url(#glow)"/><circle cx="330" cy="190" r="18" fill="#22c55e"/><circle cx="323.7" cy="183.7" r="5.3999999999999995" fill="#fff" opacity="0.6"/><text x="330" y="232" font-family="Arial, Helvetica, sans-serif" font-size="13" font-weight="700" fill="#e5e7eb" text-anchor="middle" >EB ON</text><circle cx="470" cy="190" r="24" fill="#9ca3af"/><circle cx="470" cy="190" r="24" fill="none" stroke="#6b7280"/><circle cx="470" cy="190" r="28.8" fill="#f59e0b" opacity="0.45" filter="url(#glow)"/><circle cx="470" cy="190" r="18" fill="#f59e0b"/><circle cx="463.7" cy="183.7" r="5.3999999999999995" fill="#fff" opacity="0.6"/><text x="470" y="232" font-family="Arial, Helvetica, sans-serif" font-size="13" font-weight="700" fill="#e5e7eb" text-anchor="middle" >DG ON</text><rect x="300" y="280" width="200" height="70" rx="6" fill="#1f2937"/><rect x="308" y="288" width="184" height="40" rx="3" fill="url(#lcd)"/><text x="400.0" y="316.4" font-family="'Courier New', monospace" font-size="21.0" font-weight="700" fill="#4ade80" text-anchor="middle" letter-spacing="2">415 V</text><text x="400.0" y="342" font-family="Arial, Helvetica, sans-serif" font-size="11" font-weight="700" fill="#9ca3af" text-anchor="middle" >SUPPLY</text><rect x="300" y="370" width="200" height="110" rx="10" fill="#e5e7eb" stroke="#9ca3af"/><text x="330" y="400" font-family="Arial, Helvetica, sans-serif" font-size="16" font-weight="700" fill="#16a34a" text-anchor="middle" >EB</text><text x="400" y="400" font-family="Arial, Helvetica, sans-serif" font-size="14" font-weight="700" fill="#6b7280" text-anchor="middle" >OFF</text><text x="470" y="400" font-family="Arial, Helvetica, sans-serif" font-size="16" font-weight="700" fill="#d97706" text-anchor="middle" >DG</text><g transform="rotate(-35 400 450)"><rect x="388" y="400" width="24" height="70" rx="10" fill="url(#redknob)"/></g><circle cx="400" cy="450" r="16" fill="#111827"/><rect x="540" y="270" width="22" height="90" rx="11.0" fill="url(#darkplastic)" stroke="#0b0f15"/><rect x="548.0" y="282" width="6" height="66" rx="3" fill="#6b7280"/><g transform="translate(610 400)"><rect x="0" y="40" width="130" height="90" rx="10" fill="#142d53"/><rect x="12" y="54" width="60" height="40" rx="4" fill="#1b3c6d"/><path transform="translate(84 58) scale(2.2)" d="M13.5 2 4 13.5h6.2L9 22l10-12.2h-6.3L13.5 2Z" fill="#facc15"/><rect x="10" y="130" width="20" height="10" fill="#334155"/><rect x="100" y="130" width="20" height="10" fill="#334155"/></g><text x="675" y="560" font-family="Arial, Helvetica, sans-serif" font-size="12" font-weight="700" fill="#334155" text-anchor="middle" >GENERATOR</text></svg>
