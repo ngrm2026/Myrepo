@@ -26,7 +26,7 @@ export default function ContactPage() {
   const items = [
     { icon: Phone, label: "Phone", value: siteConfig.phoneDisplay, href: telLink },
     { icon: WhatsAppIcon, label: "WhatsApp", value: siteConfig.whatsappDisplay, href: whatsappLink(), external: true },
-    { icon: Mail, label: "Email", value: siteConfig.email, href: mailLink },
+    ...(siteConfig.email ? [{ icon: Mail, label: "Email", value: siteConfig.email, href: mailLink, external: false }] : []),
   ];
 
   return (

@@ -20,6 +20,11 @@ export function ProductCard({ product, priority = false }: { product: Product; p
         <span className="absolute top-3 left-3 rounded-full bg-navy-950/85 px-2.5 py-1 text-[11px] font-semibold text-white">
           {product.category}
         </span>
+        {product.brands.length > 0 && (
+          <span className="absolute top-3 right-3 rounded-full bg-white px-2.5 py-1 text-[11px] font-bold text-navy-800 shadow">
+            {product.brands.join(" · ")}
+          </span>
+        )}
       </Link>
       <div className="flex flex-1 flex-col p-5">
         <h3 className="text-lg font-bold">

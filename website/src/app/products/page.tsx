@@ -51,7 +51,7 @@ export default function ProductsPage() {
         <div className="container-x pb-16">
           <div className="card flex flex-col items-start justify-between gap-4 p-6 sm:flex-row sm:items-center">
             <p className="text-sm text-slate-600">
-              <strong className="text-navy-950">Note:</strong> Product images are illustrative. Ratings shown are
+              <strong className="text-navy-950">Note:</strong> Some product images are illustrations. Ratings shown are
               indicative ranges; exact models, ratings, brands and prices are confirmed on enquiry based on availability
               and your requirement.
             </p>

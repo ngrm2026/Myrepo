@@ -35,6 +35,14 @@ export type Product = {
   relatedService?: string;
 };
 
+/** Logos shown next to a brand name. Add an entry when you add a brand logo to /public/images/brands/. */
+export const brandLogos: Record<string, string> = {
+  "Nu-Gen": "/images/brands/nugen-logo.png",
+};
+
+/** True when a product still uses one of the drawn placeholder images rather than a photo. */
+export const isIllustration = (src: string) => src.endsWith(".svg");
+
 export const products: Product[] = [
   {
     slug: "manual-phase-changeover-switch",
@@ -64,9 +72,9 @@ export const products: Product[] = [
     shortDescription:
       "Electronic phase selector that senses phase failure or low voltage and switches your load to a healthy phase automatically.",
     description:
-      "An automatic phase changeover switch (also called an automatic phase selector) continuously monitors the voltage on all three incoming phases. If the phase you are using fails or drops outside the safe voltage range, it automatically transfers the load to the best available phase — no need to go to the EB board in the dark. Ideal where power interruptions on one phase are common.",
-    image: "/images/products/automatic-phase-changeover.svg",
-    imageAlt: "Automatic phase changeover switch with digital voltage display and R Y B phase indicators",
+      "An automatic phase changeover switch (also called an automatic phase selector) continuously monitors the voltage on all three incoming phases. If the phase you are using fails or drops outside the safe voltage range, it automatically transfers the load to the best available phase — no need to go to the EB board in the dark. Ideal where power interruptions on one phase are common. Our Nu-Gen Electronic Auto Phase Changer (EAPC) units come in sturdy wall-mounted enclosures with clear phase indication on the front.",
+    image: "/images/products/nugen-automatic-phase-changeover.jpg",
+    imageAlt: "Nu-Gen electronic automatic phase changeover units in wall-mounted enclosures",
     specifications: [
       "Automatic sensing of phase failure, low voltage and high voltage",
       "Transfers load to a healthy phase without manual intervention",
@@ -75,7 +83,7 @@ export const products: Product[] = [
       "DIN-rail or wall-mount options depending on model",
     ],
     ratings: ["Commonly available for single-phase loads of 32 A and 63 A", "Model and rating selected after load assessment"],
-    brands: [],
+    brands: ["Nu-Gen"],
     idealFor: ["Homes with frequent phase failures", "Apartments", "Clinics", "Shops and offices"],
     relatedService: "manual-automatic-changeover-installation",
   },
@@ -128,9 +136,9 @@ export const products: Product[] = [
     shortDescription:
       "Manual or automatic transfer between EB mains and your generator (DG set) — safe, interlocked switching.",
     description:
-      "EB and generator changeover switches let you power your premises from the generator when EB supply fails and return to EB when power is restored. Choose a manual changeover for simple setups, or an Automatic Transfer Switch (ATS) / AMF-panel based solution that starts the generator and transfers the load automatically.",
-    image: "/images/products/eb-generator-changeover.svg",
-    imageAlt: "EB and generator changeover switch panel with EB and DG source indicator lamps",
+      "EB and generator changeover switches let you power your premises from the generator when EB supply fails and return to EB when power is restored. Choose a manual changeover for simple setups, or an Automatic Transfer Switch (ATS) / AMF-panel based solution that starts the generator and transfers the load automatically. Pictured: a Nu-Gen ATS panel with a digital controller on the front door.",
+    image: "/images/products/nugen-ats-changeover-panel.jpg",
+    imageAlt: "Nu-Gen ATS automatic transfer switch panel for EB and generator changeover",
     specifications: [
       "Manual changeover or Automatic Transfer Switch (ATS) options",
       "Mechanical / electrical interlocking — EB and generator never connected together",
@@ -139,7 +147,7 @@ export const products: Product[] = [
       "Can be integrated with AMF (Auto Mains Failure) generator control",
     ],
     ratings: ["Indicative range: 32 A to 3200 A", "Matched to generator capacity (kVA) and connected load"],
-    brands: [],
+    brands: ["Nu-Gen"],
     idealFor: ["Homes with generators", "Apartments", "Commercial complexes", "Factories"],
     relatedService: "eb-to-generator-changeover-installation",
   },
@@ -148,11 +156,11 @@ export const products: Product[] = [
     name: "Electrical Distribution Boards",
     category: "Distribution & Protection",
     shortDescription:
-      "SPN and TPN distribution boards (DBs) to distribute and protect circuits in homes, offices and buildings.",
+      "Single door and double door distribution boards (SPN / TPN) to distribute and protect circuits in homes, offices and buildings.",
     description:
-      "Distribution boards house your MCBs, RCCBs and isolators and distribute power safely to each circuit. We supply and install single-phase (SPN) and three-phase (TPN) distribution boards in different sizes, including double-door and IP-rated versions for demanding locations.",
-    image: "/images/products/distribution-board.svg",
-    imageAlt: "Electrical distribution board with row of MCBs and RCCB for homes and offices",
+      "Distribution boards house your MCBs, RCCBs and isolators and distribute power safely to each circuit. We supply and install single-phase (SPN) and three-phase (TPN) distribution boards in different sizes, including single door and double door Nu-Gen DBs. As pictured, a DB can also house an automatic phase changeover unit in its own compartment, keeping protection and changeover in one neat enclosure.",
+    image: "/images/products/nugen-distribution-boards.jpg",
+    imageAlt: "Nu-Gen single door and double door distribution boards with MCBs and phase changeover unit",
     specifications: [
       "SPN (single-phase) and TPN (three-phase) versions",
       "Single-door and double-door enclosures",
@@ -160,7 +168,7 @@ export const products: Product[] = [
       "Surface or flush (concealed) mounting",
     ],
     ratings: ["Common sizes: 4-way to 16-way (SPN) and 4-way to 12-way (TPN)", "Larger / custom sizes on request"],
-    brands: [],
+    brands: ["Nu-Gen"],
     idealFor: ["New homes", "Rewiring projects", "Offices", "Shops"],
     relatedService: "electrical-panel-installation",
   },

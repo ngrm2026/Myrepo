@@ -2,7 +2,7 @@ import Image from "next/image";
 import Link from "next/link";
 import { notFound } from "next/navigation";
 import { ArrowRight, CheckCircle2, Phone, Tag, Users } from "lucide-react";
-import { getProduct, products } from "@/data/products";
+import { brandLogos, getProduct, isIllustration, products } from "@/data/products";
 import { services } from "@/data/services";
 import { absoluteUrl, pageMetadata } from "@/lib/seo";
 import { productWhatsappMessage, telLink, whatsappLink } from "@/lib/whatsapp";
@@ -105,11 +105,20 @@ export default async function ProductPage({ params }: PageProps<"/products/[slug
             <div className="card mt-4 p-5">
               <h2 className="text-base font-bold">Brand information</h2>
               {product.brands.length > 0 ? (
-                <ul className="mt-3 flex flex-wrap gap-2">
-                  {product.brands.map((b) => (
-                    <li key={b} className="rounded-full bg-navy-50 px-3 py-1 text-sm font-semibold text-navy-800">{b}</li>
-                  ))}
+                <>
+                <ul className="mt-3 flex flex-wrap items-center gap-3">
+                  {product.brands.map((b) =>
+                    brandLogos[b] ? (
+                      <li key={b}>
+                        <Image src={brandLogos[b]} alt={`${b} logo`} width={190} height={96} className="h-12 w-auto rounded-md border border-slate-200 bg-white p-1" />
+                      </li>
+                    ) : (
+                      <li key={b} className="rounded-full bg-navy-50 px-3 py-1 text-sm font-semibold text-navy-800">{b}</li>
+                    ),
+                  )}
                 </ul>
+                <p className="mt-2 text-sm text-slate-600">Other reputed brands also available on request.</p>
+                </>
               ) : (
                 <p className="mt-2 text-sm text-slate-600">
                   Available in reputed brands. Current brand options and stock are shared on enquiry.
@@ -119,7 +128,7 @@ export default async function ProductPage({ params }: PageProps<"/products/[slug
 
             <p className="mt-6 rounded-xl bg-amber-50 p-4 text-sm text-amber-900">
               Ratings are indicative. The exact model, rating and price are confirmed after understanding your supply and
-              load. Product image is illustrative.
+              load.{isIllustration(product.image) ? " Product image is illustrative." : ""}
             </p>
 
             {related && (

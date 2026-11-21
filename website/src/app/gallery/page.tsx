@@ -7,7 +7,7 @@ import { WhatsAppIcon } from "@/components/WhatsAppIcon";
 import { CtaBanner } from "@/components/CtaBanner";
 
 export const metadata = pageMetadata({
-  title: "Gallery – Phase Changeover & Electrical Panel Installations in Chennai",
+  title: "Gallery – Nu-Gen Phase Changeover, DBs & Electrical Panels in Chennai",
   description:
     "See phase changeover switch installations, EB to generator changeover panels, distribution boards and electrical panel work in Chennai.",
   path: "/gallery",
@@ -18,8 +18,8 @@ export default function GalleryPage() {
     <>
       <PageHero
         eyebrow="Gallery"
-        title="Our Electrical Installation Work"
-        lead="Phase changeover switches, generator changeover panels, distribution boards and electrical panels installed for customers in Chennai."
+        title="Our Products & Installation Work"
+        lead="Nu-Gen automatic phase changeovers, single and double door distribution boards, ATS panels, and the kinds of installations we carry out across Chennai."
         crumbs={[{ name: "Gallery", path: "/gallery" }]}
       />
       <section className="section">
@@ -39,6 +39,11 @@ export default function GalleryPage() {
                     <span className="absolute top-3 left-3 rounded-full bg-brand-orange px-2.5 py-1 text-[11px] font-bold text-white">
                       {g.category}
                     </span>
+                    {g.image.endsWith(".svg") && (
+                      <span className="absolute right-3 bottom-3 rounded-full bg-white/90 px-2 py-0.5 text-[10px] font-semibold text-slate-500">
+                        Illustration
+                      </span>
+                    )}
                   </div>
                   <figcaption className="p-4 font-semibold text-navy-950">{g.title}</figcaption>
                 </figure>

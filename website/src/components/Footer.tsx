@@ -68,10 +68,12 @@ export function Footer() {
               <Phone className="mt-0.5 h-4 w-4 shrink-0 text-brand-yellow" aria-hidden="true" />
               <a href={telLink} className="hover:text-white">{siteConfig.phoneDisplay}</a>
             </li>
+            {siteConfig.email && (
             <li className="flex gap-3">
-              <Mail className="mt-0.5 h-4 w-4 shrink-0 text-brand-yellow" aria-hidden="true" />
-              <a href={mailLink} className="break-all hover:text-white">{siteConfig.email}</a>
-            </li>
+                <Mail className="mt-0.5 h-4 w-4 shrink-0 text-brand-yellow" aria-hidden="true" />
+                <a href={mailLink} className="break-all hover:text-white">{siteConfig.email}</a>
+              </li>
+            )}
             <li className="flex gap-3">
               <Clock className="mt-0.5 h-4 w-4 shrink-0 text-brand-yellow" aria-hidden="true" />
               <span>
@@ -91,7 +93,7 @@ export function Footer() {
             {areas.map((a) => a.name).join(" · ")} and other Chennai locations, subject to availability.
           </p>
           <p className="mt-3 text-navy-400">
-            © <CopyrightYear /> {siteConfig.name}. All rights reserved. Product images are illustrative.
+            © <CopyrightYear /> {siteConfig.name}. All rights reserved. Some product images are illustrations.
           </p>
         </div>
       </div>

@@ -22,10 +22,12 @@ export function Header() {
                 {weekday.label}: {to12h(weekday.opens)} – {to12h(weekday.closes)}
               </span>
             )}
-            <a href={mailLink} className="flex items-center gap-1.5 hover:text-white">
-              <Mail className="h-3.5 w-3.5 text-brand-yellow" aria-hidden="true" />
-              {siteConfig.email}
-            </a>
+            {siteConfig.email && (
+              <a href={mailLink} className="flex items-center gap-1.5 hover:text-white">
+                <Mail className="h-3.5 w-3.5 text-brand-yellow" aria-hidden="true" />
+                {siteConfig.email}
+              </a>
+            )}
           </div>
         </div>
       </div>

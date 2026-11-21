@@ -12,30 +12,30 @@
 
 export const siteConfig = {
   /** Business name shown in the header, footer, page titles and Google data. */
-  name: "Chennai EB Switch & Changeover Services", // REPLACE with your registered business name
-  shortName: "EB Switch Chennai", // REPLACE (used for the mobile app name / small spaces)
+  name: "Intech Power Solutions",
+  shortName: "Intech Power Solutions",
   tagline: "EB Switch & Phase Changeover Sales and Services",
 
   /** Public website address, without a trailing slash. Can also be set with NEXT_PUBLIC_SITE_URL. */
   url: process.env.NEXT_PUBLIC_SITE_URL ?? "https://www.example.com", // REPLACE
 
   /** Phone number in international format (digits only, with country code) — used for click-to-call. */
-  phone: "+910000000000", // REPLACE e.g. "+919876543210"
+  phone: "+919840388958",
   /** How the phone number is displayed on the site. */
-  phoneDisplay: "+91 00000 00000", // REPLACE e.g. "+91 98765 43210"
+  phoneDisplay: "+91 98403 88958",
 
   /** WhatsApp number: digits only, with country code, no "+" or spaces. */
-  whatsapp: "910000000000", // REPLACE e.g. "919876543210"
-  whatsappDisplay: "+91 00000 00000", // REPLACE
+  whatsapp: "919840388958",
+  whatsappDisplay: "+91 98403 88958",
 
-  email: "info@example.com", // REPLACE
+  email: "", // add your business email here, e.g. "info@yourdomain.com" (hidden while empty)
 
   address: {
-    street: "Your street address", // REPLACE
-    locality: "Velachery", // REPLACE with your area
+    street: "117/231 Gandhi Road",
+    locality: "Velachery",
     city: "Chennai",
     region: "Tamil Nadu",
-    postalCode: "600042", // REPLACE
+    postalCode: "600042",
     country: "IN",
   },
 
@@ -43,7 +43,7 @@ export const siteConfig = {
    * Google Maps: the text searched on Google Maps for the embedded map.
    * Best: your exact business name as listed on Google Maps, plus area.
    */
-  mapQuery: "Velachery, Chennai, Tamil Nadu", // REPLACE
+  mapQuery: "117/231 Gandhi Road, Velachery, Chennai 600042",
   /** Optional: link to your Google Business Profile (for "Get directions" / reviews). */
   googleBusinessUrl: "",
   /** Optional: link where customers can read / write Google reviews. */

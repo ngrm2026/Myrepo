@@ -99,10 +99,10 @@ export default function HomePage() {
           <div className="relative">
             <div className="relative overflow-hidden rounded-3xl border border-white/10 shadow-2xl shadow-black/40">
               <Image
-                src="/images/hero-changeover-panel.svg"
-                alt="Phase changeover switch and electrical panel installation by Chennai electrical technicians"
-                width={890}
-                height={650}
+                src="/images/hero-nugen-products.jpg"
+                alt="Nu-Gen automatic phase changeover, distribution board and ATS panel from Intech Power Solutions, Chennai"
+                width={1200}
+                height={880}
                 priority
                 className="h-auto w-full"
               />
@@ -130,6 +130,28 @@ export default function HomePage() {
               </li>
             ))}
           </ul>
+        </div>
+      </section>
+
+      {/* BRAND */}
+      <section aria-label="Nu-Gen products" className="bg-white">
+        <div className="container-x flex flex-col items-center gap-6 py-10 md:flex-row md:justify-between">
+          <div className="flex items-center gap-5">
+            <Image
+              src="/images/brands/nugen-logo.png"
+              alt="Nu-Gen logo"
+              width={190}
+              height={96}
+              className="h-14 w-auto rounded-lg border border-slate-200 bg-white p-1"
+            />
+            <p className="max-w-md text-sm text-slate-600 sm:text-base">
+              <strong className="text-navy-950">Nu-Gen</strong> automatic phase changeovers, single &amp; double door
+              distribution boards and ATS panels — supplied and installed by {siteConfig.name}.
+            </p>
+          </div>
+          <Link href="/products" className="btn-outline shrink-0">
+            See Nu-Gen products <ArrowRight className="h-4 w-4" aria-hidden="true" />
+          </Link>
         </div>
       </section>
 

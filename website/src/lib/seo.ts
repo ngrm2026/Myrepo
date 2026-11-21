@@ -61,7 +61,7 @@ export function localBusinessJsonLd() {
       "EB switch and phase changeover switch sales, installation, repair and maintenance in Chennai. Electrical panels, distribution boards, MCB, MCCB, contactors and switchgear.",
     url: absoluteUrl("/"),
     telephone: s.phone,
-    email: s.email,
+    ...(s.email ? { email: s.email } : {}),
     image: absoluteUrl("/opengraph-image"),
     logo: absoluteUrl("/icon.svg"),
     address: {
