@@ -43,7 +43,7 @@ PLAN_CACHE_TOP_SQL = """
 SELECT TOP (?)
        NULL AS query_id,
        NULL AS plan_id,
-       OBJECT_NAME(st.objectid, st.dbid) AS object_name,
+       OBJECT_NAME(st.objectid, pa.dbid) AS object_name,
        SUBSTRING(st.text, (qs.statement_start_offset / 2) + 1,
                  ((CASE qs.statement_end_offset WHEN -1 THEN DATALENGTH(st.text)
                    ELSE qs.statement_end_offset END - qs.statement_start_offset) / 2) + 1) AS query_sql_text,
@@ -56,6 +56,11 @@ SELECT TOP (?)
 FROM sys.dm_exec_query_stats qs
 CROSS APPLY sys.dm_exec_sql_text(qs.sql_handle) st
 OUTER APPLY sys.dm_exec_query_plan(qs.plan_handle) qp
+-- The plan cache is server-wide: keep only plans compiled in the current database.
+CROSS APPLY (SELECT CONVERT(int, pa.value) AS dbid
+             FROM sys.dm_exec_plan_attributes(qs.plan_handle) pa
+             WHERE pa.attribute = 'dbid') pa
+WHERE pa.dbid = DB_ID()
 ORDER BY qs.total_worker_time DESC;
 """
 
