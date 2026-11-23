@@ -26,7 +26,14 @@ Query Store / DMVs ──► plan summary + table & index definitions ──► 
 1. **Python 3.10+**: `python --version`
 2. **ODBC Driver 18 for SQL Server** (install it from Microsoft if `SQL_DRIVER` errors).
 3. A **SQL Server** instance you can reach: local Developer/Express edition, LocalDB, or a dev server.
-4. An **LLM key**: Azure OpenAI (recommended for work data, since it stays in your tenant), OpenAI or Anthropic.
+4. An **LLM**: Azure OpenAI (stays in your tenant), OpenAI, Anthropic, or **Ollama**, which is free, runs on your laptop and sends no data anywhere.
+
+### Free local LLM with Ollama
+
+1. Install Ollama from ollama.com.
+2. Run `ollama pull qwen2.5-coder:7b` (about 4.7 GB; it needs about 8 GB of free RAM).
+3. In `.env`, set `LLM_PROVIDER=ollama`, `LLM_MODEL=qwen2.5-coder:7b` and `MAX_PLAN_CHARS=8000`.
+4. Give the model room for long plans: `setx OLLAMA_CONTEXT_LENGTH 16384`, then restart Ollama.
 
 ## Setup
 

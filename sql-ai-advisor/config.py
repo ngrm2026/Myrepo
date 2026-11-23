@@ -22,7 +22,7 @@ SQL_PASSWORD = os.getenv("SQL_PASSWORD", "")
 SQL_TRUST_CERT = _bool("SQL_TRUST_SERVER_CERTIFICATE", True)
 
 # ---- LLM ------------------------------------------------------------------
-# azure | openai | anthropic
+# azure | openai | anthropic | ollama (free, local)
 LLM_PROVIDER = os.getenv("LLM_PROVIDER", "azure").strip().lower()
 LLM_MODEL = os.getenv("LLM_MODEL", "")  # Azure: deployment name
 LLM_MAX_TOKENS = int(os.getenv("LLM_MAX_TOKENS", "1500"))
@@ -32,6 +32,7 @@ AZURE_OPENAI_API_KEY = os.getenv("AZURE_OPENAI_API_KEY", "")
 AZURE_OPENAI_API_VERSION = os.getenv("AZURE_OPENAI_API_VERSION", "2024-10-21")
 OPENAI_API_KEY = os.getenv("OPENAI_API_KEY", "")
 ANTHROPIC_API_KEY = os.getenv("ANTHROPIC_API_KEY", "")
+OLLAMA_BASE_URL = os.getenv("OLLAMA_BASE_URL", "http://localhost:11434/v1")
 
 # ---- Behaviour ------------------------------------------------------------
 LOOKBACK_HOURS = int(os.getenv("LOOKBACK_HOURS", "24"))
